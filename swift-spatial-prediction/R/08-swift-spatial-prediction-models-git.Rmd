@@ -1,7 +1,7 @@
 ---
 title: "SWIFT spatial: predictive analysis"
 author: "Christine Tedijanto christine.tedijanto@ucsf.edu"
-date: "Last updated: 07/16/2021"
+date: "Last updated: 09/23/2021"
 output:
     html_document:
       toc: true
@@ -13,13 +13,7 @@ output:
 number_sections: false
 ---
 
-**Objective**: The objective of this notebook is to conduct predictive analyses using data at all time points. Earlier version of this document used only baseline data as an exploratory analysis.
-
-Based on the exploratory analysis using survey 0 data, the baseline analysis will use logistic regression (implemented in spaMM) with predictive power assessed by spatially blocked (15km) cross-validated $R^2$. We will use random samples from 0-5yo in each cluster and focus on trachoma measures at various time lags as predictors. Sensitivity analyses will assess more complex models with additional features and modified cross-validation procedures.
-
-Updates:
-
-* 07/16/2021: Cleaned and commented code.
+**Objective**: The objective of this notebook is to conduct predictive analyses using data at all time points. Based on the exploratory analysis using only survey 0 data, the baseline analysis will use logistic regression (implemented in spaMM) with predictive power assessed by spatially blocked (15km) cross-validated $R^2$. We will use random samples from 0-5yo in each cluster and focus on trachoma measures at various time lags as predictors. Sensitivity analyses will assess more complex models with additional features and modified cross-validation procedures.
 
 ```{r setup, message = FALSE}
 library(here)
@@ -33,18 +27,10 @@ num_cores <- parallel::detectCores()
 n_folds <- 10
 folds_seed <- 111 # 111
 
-# use saved results?
-use_saved_results <- TRUE
-if(use_saved_results){
-  cv_glmnet_results <- read_rds(file = here(data_path, "1-temp", "cv_glmnet_results_public111.rds"))
-  cv_logistic_results <- read_rds(file = here(data_path, "1-temp", "cv_logistic_results_public111.rds"))
-  cv_logistic_summary <- read_rds(file = here(data_path, "1-temp", "cv_logistic_summary_public111.rds"))
-  sl_summary <- read_rds(file = here(data_path, "1-temp", "sl_summary_public111.rds"))
-}
-
-# read in data
-clu_random_0to5 <- readRDS(file = here(data_path, "3-public", "clu_random_modeldata_0to5_public.rds")) %>%
-  rename(cluster_id = cluster_id_public)
+# read in data (public)
+clu_random_0to5 <- readRDS(file = here(data_path, "3-public", "clu_random_modeldata_public.rds")) %>%
+  rename(cluster_id = cluster_id_public) %>% 
+  filter(age_group == "0-5y")
 
 # setup dataframes
 clu_random_0to5_sf <- clu_random_0to5 %>% 
@@ -57,10 +43,8 @@ clu_sf <- clu_random_0to5_sf %>%
 
 ### Helper functions
 
-Helper functions include:
-
 * `get_prepared_df` to prepare data for lagged and pooled analyses
-* `get_pos_var` and `get_weights_var` to facilitate `prep_binom_formula`
+* `get_pos_var` and `get_tested_var` to facilitate `prep_binom_formula`
 * `prep_binom_formula` to prepare the formula string
 * `get_r2_ci` to calculate $R^2$ and influence-function-based confidence interval
 
@@ -123,14 +107,14 @@ get_prepared_df <- function(input_df, outcome_survey, input_lag, outcome_var, co
   } 
 }
 
-### Functions - `get_pos_var`, `get_weights_var`: short helper functions to facilitate `prep_formula` function -----
+### Functions - `get_pos_var`, `get_tested_var`: short helper functions to facilitate `prep_formula` function -----
 # o is outcome variable in form "prevalence_<outcome>"
-# returns either pos or weights (n_tested) variable name as a string
+# returns either pos "n_pos_<outcome>" or  "n_tested_<outcome>" variable name as a string
 ## --------------------------------------------------------------------------------------------
 get_pos_var <- function(o){ paste0("n_pos_", str_split(o, "_")[[1]][2]) }
-get_weights_var <- function(o){ paste0("n_tested_", str_split(o, "_")[[1]][2]) }
+get_tested_var <- function(o){ paste0("n_tested_", str_split(o, "_")[[1]][2]) }
 
-## Function - `prep_binom_formula`: prepare formula string for input to binomial regression model ------------
+## Function - `prep_binom_formula`: prepare formula string for input to grouped logistic regression ------------
 # outcome_var (character): outcome covariate (string)
 # covariates (character vector): list of covariate names to include in model
 # matern_var (character): matern covariate as string, or NA if not included
@@ -138,12 +122,12 @@ get_weights_var <- function(o){ paste0("n_tested_", str_split(o, "_")[[1]][2]) }
 ## --------------------------------------------------------------------------------------------
 prep_binom_formula <- function(outcome_var, covariates, matern_var){
   
-  # get pos and weight variables
+  # get pos and tested variables
   pos_var <- get_pos_var(outcome_var)
-  weights_var <- get_weights_var(outcome_var)
+  tested_var <- get_tested_var(outcome_var)
   
   # write formula
-  formula <- paste0("cbind(", pos_var, ",", weights_var, "-", pos_var, ")",
+  formula <- paste0("cbind(", pos_var, ",", tested_var, "-", pos_var, ")",
                     "~",
                     paste(covariates, collapse="+"))
     
@@ -156,9 +140,6 @@ prep_binom_formula <- function(outcome_var, covariates, matern_var){
 }
 
 ### Function - `get_r2_ci`: calculate cross-validated R^2 and influence curve-based confidence intervals -----
-# Based on methodology presented in [Benkeser et al. 2020](https://www.degruyter.com/view/journals/ijb/ahead-of-print/article-10.1515-ijb-2019-0061/article-10.1515-ijb-2019-0061.xml?language=en)
-# Idea underlying the influence curve is to capture the effect of each observation on parameter estimates
-# Benkeser methodology based on [Hubbard et al. 2016](https://www.degruyter.com/view/journals/ijb/12/1/article-p3.xml)
 # Code below is based on code from packages by Benkeser [here](https://github.com/benkeser/cvma/blob/master/R/diff_cvma.R) and [here](https://github.com/benkeser/r2weight/blob/a6491ad75eb392491e68ad7b5469b1799921b2fa/R/getUnivariateR2.R)
 # obs (numeric vector): list of observed outcomes
 # pred (numeric vector): list of predicted outcomes
@@ -186,12 +167,7 @@ get_r2_ci <- function(obs, pred, conf = 0.95){
   n <- length(obs)
   grad <- matrix(c(1/mse, -1/yvar), nrow = 1)
   ic <- cbind(ic.mse, ic.yvar)
-  ## some notes on the se variations below:
-  # ic_cov <- stats::cov(ic)
-  # note that t(ic) %*% ic / (n-1) = cov(ic)
-  # essentially same except denominator in cov is 39, denominator for second version is 40
-  # se <- sqrt(grad%*%ic_cov%*%t(grad) /n) # as written in `compare_cvma` function
-  se <- sqrt(grad%*%t(ic)%*%ic%*%t(grad))/n # as written in `getUnivariateR2` function and Benkeser 2020, section 2.2
+  se <- sqrt(grad%*%t(ic)%*%ic%*%t(grad))/n # based on `getUnivariateR2` function and Benkeser 2020, section 2.2
   
   # calculate confidence intervals on log scale and then exponentiate
   log_r2_comp <- log(r2_comp)  
@@ -236,7 +212,7 @@ var_group_labels <- c("Mean only", "Trachoma indicators", "Population", "Poverty
 
 We apply spatial cross-validation at 15km as a baseline analysis and explore ranges from 5-20km as sensitivity analyses.
 
-In the preliminary analysis, we compared random cross-validation, spatial blocking, and spatial buffering. Random cross-validation does not account for spatial autocorrelation, which may be optimistic depending on the intended prediction goal. On the other hand, both spatial blocking and buffering attempt to decrease spatial dependence between the training and validation sets in each fold, simulating prediction performance for areas that are not spatially autocorrelated. We decided to implement spatial blocking as the baseline analysis as it accounts for spatial autocorrelation and extends more readily to 10-fold cross-validation in our context. When including more than one item in the test set, spatial buffering can potentially drop many items from the training set. Spatial blocking and buffering had fairly similar results in the preliminary analysis, so we focused on spatial blocking for the main analysis.
+In the preliminary analysis, we compared random cross-validation, spatial blocking, and spatial buffering. Random cross-validation does not account for spatial autocorrelation, which may be optimistic depending on the intended prediction goal. On the other hand, both spatial blocking and buffering attempt to decrease spatial dependence between the training and validation sets in each fold, simulating prediction performance for areas that are not spatially autocorrelated. We decided to implement spatial blocking as the baseline analysis as it accounts for spatial autocorrelation and extends more readily to 10-fold cross-validation in our context. When including more than one item in the test set, spatial buffering can potentially drop many items from the training set. Spatial blocking and buffering had fairly similar results in the preliminary analysis based on baseline data only.
 
 Another option would be to block by woreda. This may be more analogous to a clear prediction problem (e.g. predicting in a neighboring district). In this particular case, we have a small number of woredas (3).
 
@@ -298,7 +274,7 @@ folds_grid <- data.frame(cv_method = c(rep("block", 4), "random"),
                          range = c(seq(5, 20, by = 5), NA)) %>%
   rowwise() %>% 
   mutate(cv_method_label = paste(na.omit(c(cv_method, "folds", "list", range)), collapse = "_")) %>% 
-  as.data.frame() # has to be dataframe to use [x, y] notation in loop
+  as.data.frame()
 
 for (i in 1:nrow(folds_grid)) {
   # assign name to folds
@@ -377,8 +353,8 @@ get_glmnet_results <- function(input_df, outcome_var, outcome_survey, input_lag,
   
   # prepare data in `cv.glmnet` formats
   pos_var <- get_pos_var(outcome_var)
-  weights_var <- get_weights_var(outcome_var)
-  Y <- cbind(prepped_df[,pos_var], prepped_df[,weights_var]-prepped_df[,pos_var]) %>% as.matrix()
+  tested_var <- get_tested_var(outcome_var)
+  Y <- cbind(prepped_df[,pos_var], prepped_df[,tested_var]-prepped_df[,pos_var]) %>% as.matrix()
   X <- prepped_df %>% dplyr::select(all_of(prepped_covariates)) %>% as.matrix()
   
   # run built-in CV glmnet procedure
@@ -425,15 +401,13 @@ glmnet_grid <- expand.grid(covariates = c("all", "all_but_trach"),
            filter(input_lag <= outcome_survey | outcome_survey == -1))
 
 # approx runtime: 3 minutes on 4 cores
-if(!use_saved_results){
-  cv_glmnet_results <- pbmcapply::pbmclapply(
-    split(glmnet_grid, 1:nrow(glmnet_grid)),
-    function(x){
-      do.call(get_glmnet_results, args = c(list(input_df = clu_random_0to5), as.list(x))) %>% 
-        mutate(x)
-    }, mc.cores = 4) %>%
-    bind_rows()
-}
+cv_glmnet_results <- pbmcapply::pbmclapply(
+  split(glmnet_grid, 1:nrow(glmnet_grid)),
+  function(x){
+    do.call(get_glmnet_results, args = c(list(input_df = clu_random_0to5), as.list(x))) %>% 
+      mutate(x)
+  }, mc.cores = 4) %>%
+  bind_rows()
 ```
 
 ```{r glmnet_viz, fig.width = 8.5, fig.height = 3.5}
@@ -463,7 +437,7 @@ cv_glmnet_results %>%
         strip.text = element_text(size = 10))
 ```
 
-GLMnet does not converge in many cases (light gray tiles), and results vary based on covariate list, alpha, and folds. In the interest of minimizing the number of covariates and based on modeling decisions from the preliminary analysis, we focus on covariates `avg_rad_12m`, `precip_12m`, and `precip_1m` identified by LASSO with 15x15km spatially-blocked folds in the pooled analysis with no lag. These variables are selected fairly consistently across varying inputs. Note that we later also drop `precip_1m` as it did not substantially improve predictive performance. Models including `surface_water_12m` were also tested and had fairly similar predictive performance.
+GLMnet does not converge in many cases (light gray tiles), and results vary based on covariate list, alpha, and folds. We focus on covariates `avg_rad_12m`, `precip_12m`, and `precip_1m` identified by LASSO with 15x15km spatially-blocked folds in the pooled analysis with no lag. We later also dropped `precip_1m` as it did not substantially improve predictive performance. Models including `surface_water_12m` were also tested and had fairly similar predictive performance.
 
 ```{r glmnet_var_groups}
 glmnet_vars <- c("avg_rad_12m", "precip_12m", "precip_1m")
@@ -492,13 +466,6 @@ cv_logistic <- function(fold, input_df, outcome_var, covariates, matern_var){
   # split up data into training and validation sets
   train_data <- input_df[fold$training_set,]
   valid_data <- input_df[fold$validation_set,]
-  
-  # some covariate sets are empty; also set preds to NA
-  # if(length(covariates)==0){
-  #   
-  #   message("covariate set empty, setting all predicted values to NA")
-  #   preds <- rep(NA, nrow(valid_data))
-  #   reg_form <- NA
     
   # prepare formula for model
   temp_formula <- prep_binom_formula(outcome_var = outcome_var,
@@ -581,32 +548,30 @@ cv_logistic_grid <- expand.grid(
 
 ## iterate through parameters
 # approx runtime on 4 cores: 1 hr
-if(!use_saved_results){
-  cv_logistic_results <- pbmcapply::pbmclapply(
-    1:nrow(cv_logistic_grid),
-    function(x){
-      # prepare data and covariate name list
-      prepped_data <- get_prepared_df(input_df = clu_random_0to5,
-                                      outcome_survey = cv_logistic_grid[x,"outcome_survey"],
-                                      input_lag = cv_logistic_grid[x,"input_lag"],
-                                      outcome_var = cv_logistic_grid[x,"outcome_var"],
-                                      covariates = cv_logistic_grid[x,"covariates"])
-      
-      # prepare folds
-      prepped_folds <- get_pooled_folds(folds_list = get(cv_logistic_grid[x, "folds_name"]),
-                                        input_df = prepped_data[[1]])
-      
-      # perform cross-validation                                          
-      cross_validate(cv_fun = cv_logistic,
-                     folds = prepped_folds,
-                     input_df = prepped_data[[1]],
-                     outcome_var = cv_logistic_grid[x,"outcome_var"],
-                     covariates = prepped_data[[2]],
-                     matern_var = cv_logistic_grid[x, "matern_var"])
-      },
-  mc.cores = 4 # set number of cores for parallel processing
-  )
-} 
+cv_logistic_results <- pbmcapply::pbmclapply(
+  1:nrow(cv_logistic_grid),
+  function(x){
+    # prepare data and covariate name list
+    prepped_data <- get_prepared_df(input_df = clu_random_0to5,
+                                    outcome_survey = cv_logistic_grid[x,"outcome_survey"],
+                                    input_lag = cv_logistic_grid[x,"input_lag"],
+                                    outcome_var = cv_logistic_grid[x,"outcome_var"],
+                                    covariates = cv_logistic_grid[x,"covariates"])
+    
+    # prepare folds
+    prepped_folds <- get_pooled_folds(folds_list = get(cv_logistic_grid[x, "folds_name"]),
+                                      input_df = prepped_data[[1]])
+    
+    # perform cross-validation                                          
+    cross_validate(cv_fun = cv_logistic,
+                   folds = prepped_folds,
+                   input_df = prepped_data[[1]],
+                   outcome_var = cv_logistic_grid[x,"outcome_var"],
+                   covariates = prepped_data[[2]],
+                   matern_var = cv_logistic_grid[x, "matern_var"])
+    },
+mc.cores = 4 # set number of cores for parallel processing
+)
 
 ## summarize data
 cv_logistic_summary <- lapply(
@@ -620,7 +585,7 @@ cv_logistic_summary <- lapply(
 
 ### Stacked ensemble prediction
 
-Documentation for `sl3` can be found [here](https://tlverse.org/sl3/reference/index.html). Since our outcomes are proportional, `outcome_type` must be specified as quasibinomial for certain learners (e.g. glm). Coefficient estimates are same as binomial, but standard errors differ; this should not affect our analysis as we are not conducting inference on individual coefficients. Some discussion on quasibinomial vs. binomial glms [here](https://stackoverflow.com/questions/12953045/warning-non-integer-successes-in-a-binomial-glm-survey-packages/55284627#55284627).
+Documentation for `sl3` can be found [here](https://tlverse.org/sl3/reference/index.html). Since our outcomes are proportional, `outcome_type` must be specified as quasibinomial for certain learners (e.g. glm). Coefficient estimates are same as binomial, but standard errors differ; this should not affect our analysis as we are not conducting inference on individual coefficients. 
 
 ```{r fit_superlearner}
 ## Function - `fit_superlearner`: fit stacked ensemble using `sl3` package -----
@@ -631,11 +596,10 @@ Documentation for `sl3` can be found [here](https://tlverse.org/sl3/reference/in
 # covariates (character): name of covariate list
 # folds_name (character): name of folds to be used for CV
 # sl_method (character): desired superlearner method (glm, nnls, nnls-convex, spaMM, or spaMM-matern)
-# ret_pred (boolean): if TRUE, return full list of CV predictions; if FALSE, return just summary statistics
 # returns results (either summary or full CV predictions) from stacked ensemble
 # note that this function is difficult to replicate exactly with seeds
 ## -----------------------------------------------------------------------------
-fit_superlearner <- function(input_df, outcome_var, outcome_survey, input_lag, covariates, folds_name, sl_method, ret_pred){
+fit_superlearner <- function(input_df, outcome_var, outcome_survey, input_lag, covariates, folds_name, sl_method){
   
   ## prepare data -----
   prepped_data <- get_prepared_df(input_df = input_df,
@@ -650,7 +614,7 @@ fit_superlearner <- function(input_df, outcome_var, outcome_survey, input_lag, c
                                     input_df = prepped_df)
 
   pos_var <- paste0("n_pos_", str_split(outcome_var, "_")[[1]][2])
-  weights_var <- paste0("n_tested_", str_split(outcome_var, "_")[[1]][2])
+  tested_var <- paste0("n_tested_", str_split(outcome_var, "_")[[1]][2])
 
   # define learning task
   learner_task <- make_sl3_Task(data = prepped_df,
@@ -658,7 +622,7 @@ fit_superlearner <- function(input_df, outcome_var, outcome_survey, input_lag, c
                                 outcome = outcome_var,
                                 outcome_type = "quasibinomial",
                                 folds = prepped_folds,
-                                weights = weights_var)
+                                weights = tested_var)
 
   ## create stack of base learners -----
   # 1. logistic regression (glm)
@@ -702,15 +666,15 @@ fit_superlearner <- function(input_df, outcome_var, outcome_survey, input_lag, c
     metalearner <- make_learner(Lrnr_nnls, convex=TRUE)
   } else if (sl_method=="spaMM"){
     metalearner <- make_learner(Lrnr_spaMM,
-                                outcome_formula = paste0("cbind(", pos_var, ",", weights_var, "-", pos_var, ")"),
-                                outcome_covariates = c(pos_var, weights_var), 
+                                outcome_formula = paste0("cbind(", pos_var, ",", tested_var, "-", pos_var, ")"),
+                                outcome_covariates = c(pos_var, tested_var), 
                                 matern_covariates = c(),
                                 outcome_type = "binomial",
                                 method = "ML") # default is ML
   } else if (sl_method=="spaMM-matern"){
     metalearner <- make_learner(Lrnr_spaMM,
-                                outcome_formula = paste0("cbind(", pos_var, ",", weights_var, "-", pos_var, ")"),
-                                outcome_covariates = c(pos_var, weights_var), 
+                                outcome_formula = paste0("cbind(", pos_var, ",", tested_var, "-", pos_var, ")"),
+                                outcome_covariates = c(pos_var, tested_var), 
                                 matern_covariates = c("lat", "lon"),
                                 outcome_type = "binomial",
                                 method = "ML") # default is ML
@@ -735,19 +699,24 @@ fit_superlearner <- function(input_df, outcome_var, outcome_survey, input_lag, c
                         pred = unwt_pred,
                         conf = 0.95)
   
-  ret <- c(sl_mean_risk = sl_risk$mean_risk, # MSE weighted by input weights
-           sl_rmse = sqrt(sl_risk$mean_risk),
-           sl_SE_risk = sl_risk$SE_risk, 
-           unwt_mse = unwt_mse, # unweighted values analogous to R^2 calculated for logistic
-           sl_r2_ci)
+  ret_summary <- c(sl_mean_risk = sl_risk$mean_risk, # MSE weighted by input weights
+                   sl_rmse = sqrt(sl_risk$mean_risk),
+                   sl_SE_risk = sl_risk$SE_risk, 
+                   unwt_mse = unwt_mse, # unweighted values analogous to R^2 calculated for logistic
+                   sl_r2_ci)
   
-  if(ret_pred){
-    ret <- data.frame(cluster_id = prepped_df[, "cluster_id"] %>% pull(),
-                      obs = unwt_obs,
-                      pred = unwt_pred,
-                      outcome_survey = outcome_survey,
-                      input_lag = input_lag)
-  }
+  ret_pred <- data.frame(cluster_id = prepped_df[, "cluster_id"] %>% pull(),
+                         obs = unwt_obs,
+                         pred = unwt_pred,
+                         outcome_var = outcome_var,
+                         outcome_survey = outcome_survey,
+                         input_lag = input_lag,
+                         covariates = covariates,
+                         folds_name = folds_name,
+                         sl_method = sl_method)
+  
+  ret <- list(summary = ret_summary,
+              pred = ret_pred)
 
   return(ret)
 }
@@ -763,8 +732,7 @@ sl_grid <- expand.grid(sl_method = c("glm", "nnls", "nnls-convex", "spaMM", "spa
   # add possible lag/survey combinations
   crossing(expand.grid(outcome_survey = c(survey_list, -1), input_lag = survey_list) %>%
            filter(input_lag <= outcome_survey | outcome_survey == -1)) %>%
-  mutate(ret_pred = FALSE,
-         outcome_var = "prevalence_pcr",
+  mutate(outcome_var = "prevalence_pcr",
          covariates = "glmnet_and_trach_2") %>% 
   # limit to combinations required for figures since runtime is long
   filter(folds_name != "loo_folds_list" |
@@ -774,15 +742,20 @@ sl_grid <- expand.grid(sl_method = c("glm", "nnls", "nnls-convex", "spaMM", "spa
   as.data.frame()
 
 ## iterate through parameters
-# approx runtime on 4 cores: 26 minutes
-if(!use_saved_results){
-  sl_summary <- pbmcapply::pbmclapply(split(sl_grid, 1:nrow(sl_grid)),
-                    function(x){
-                      do.call(fit_superlearner, args = c(list(input_df = clu_random_0to5), as.list(x)))
-                      }, mc.cores = 4) %>%
-    bind_rows() %>% 
-    bind_cols(sl_grid)
-}
+# approx runtime on 4 cores: 30 minutes
+sl_results_all <- pbmcapply::pbmclapply(split(sl_grid, 1:nrow(sl_grid)),
+                  function(x){
+                    do.call(fit_superlearner, args = c(list(input_df = clu_random_0to5), as.list(x)))
+                    }, mc.cores = 4)
+
+sl_summary <- sl_results_all %>%
+  purrr::map("summary") %>%
+  bind_rows() %>%
+  bind_cols(sl_grid)
+
+sl_results <- sl_results_all %>%
+  purrr::map("pred") %>%
+  bind_rows()
 ```
 
 ### Visualize results
@@ -849,15 +822,4 @@ fig_df %>%
         legend.key.height = unit(0.5, 'cm'),
         plot.caption = element_text(hjust = 0)) + # align caption to left
   guides(colour = guide_legend(nrow = 2, byrow = TRUE))
-```
-
-### Save results
-
-```{r save}
-if(!use_saved_results){
-  write_rds(cv_glmnet_results, file = here(data_path, "1-temp", "cv_glmnet_results_public111.rds"))
-  write_rds(cv_logistic_results, file = here(data_path, "1-temp", "cv_logistic_results_public111.rds"))
-  write_rds(cv_logistic_summary, file = here(data_path, "1-temp", "cv_logistic_summary_public111.rds"))
-  write_rds(sl_summary, file = here(data_path, "1-temp", "sl_summary_public111.rds"))
-}
 ```

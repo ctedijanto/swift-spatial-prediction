@@ -6,8 +6,8 @@
 ### ----------------------
 
 ### load package environment -----
-if (!require(renv)) install.packages('renv')
-renv::restore()
+#if (!require(renv)) install.packages('renv')
+#renv::restore()
 
 ### load packages -----
 # general
@@ -22,6 +22,7 @@ library(ggpubr)
 library(gridExtra) # grid.arrange
 library(corrplot)
 library(cowplot) # panel figures
+library(gt) # tables
 
 # api
 library(httr)
@@ -64,6 +65,7 @@ figure_path <- "../2-figures"
 swift_crs <- 4326
 survey_list <- c(0,12,24,36)
 age_group_list <- c("0-5y", "6-9y", "10+y")
+trach_ind <- c("prevalence_sero", "prevalence_pcr", "prevalence_clin")
 
 # create vectors containing start and end dates of each month in study
 # start with 2015 (year prior to baseline survey, which was conducted in December 2015)
