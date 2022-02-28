@@ -31,10 +31,10 @@ The first 3 `.Rmd` files (`01-data-prep.Rmd`, `02-gee-extract.Rmd`, and `03-merg
 
 1. Clone this repository
 2. Download and run Docker on your machine. Under Preferences > Resources > Advanced, increase memory to 8GB (some included packages require additional memory to compile)
-3. Build the Docker image using following command in Terminal: `docker build -t <image name> <repository filepath>` 
+3. Build the Docker image (example command in Terminal: `docker build -t <image name> <repository filepath>`)
 	- The Docker build should take around 60 minutes including installation of all packages using `renv`
-4. Launch an instance of the Docker image using the following command in Terminal:  `docker run -e USER=<username> -e PASSWORD=<password> --rm -p 8787:8787 -v <repository filepath>:/home/rstudio <image name>`
-5. Navigate to the browser (`http://localhost:8787`). To access RStudio Server, enter the user ID and password specified in the Terminal command
+4. Launch an instance of the Docker image (example command in `docker run -e USER=<username> -e PASSWORD=<password> --rm -p 8787:8787 -v <repository filepath>:/home/rstudio <image name>`)
+5. Navigate to the browser (e.g. `http://localhost:8787`). To access RStudio Server, enter the user ID and password specified in the Terminal command
 6. Run code chunks or knit entire `.Rmd` files
 
 **If not using Docker:**
