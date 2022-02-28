@@ -1,7 +1,7 @@
 ---
 title: "SWIFT spatial: predictive analysis"
 author: "Christine Tedijanto christine.tedijanto@ucsf.edu"
-date: "Last updated: 09/23/2021"
+date: "Last updated: 09/23/2021, cleaned: 02/28/2022"
 output:
     html_document:
       toc: true
@@ -13,11 +13,11 @@ output:
 number_sections: false
 ---
 
-**Objective**: The objective of this notebook is to conduct predictive analyses using data at all time points. Based on the exploratory analysis using only survey 0 data, the baseline analysis will use logistic regression (implemented in spaMM) with predictive power assessed by spatially blocked (15km) cross-validated $R^2$. We will use random samples from 0-5yo in each cluster and focus on trachoma measures at various time lags as predictors. Sensitivity analyses will assess more complex models with additional features and modified cross-validation procedures.
+**Objective**: Conduct predictive analyses using data at all time points. Based on the exploratory analysis using only survey 0 data, the baseline analysis will use logistic regression (implemented in spaMM) with predictive power assessed by spatially blocked (15km) cross-validated $R^2$. We will use random samples from 0-5yo in each cluster and focus on trachoma measures at various time lags as predictors. Sensitivity analyses will assess more complex models with additional features and modified cross-validation procedures.
 
 ```{r setup, message = FALSE}
 library(here)
-source(here("..", "0-config.R"))
+source(here("0-config.R"))
 source(here("R", "Lrnr_spaMM.R"))
 
 # for parallel processing
@@ -25,10 +25,10 @@ num_cores <- parallel::detectCores()
 
 # set cross-validation parameters
 n_folds <- 10
-folds_seed <- 111 # 111
+folds_seed <- 111
 
 # read in data (public)
-clu_random_0to5 <- readRDS(file = here(data_path, "3-public", "clu_random_modeldata_public.rds")) %>%
+clu_random_0to5 <- readRDS(file = here(data_path, "clu_random_modeldata_public.rds")) %>%
   rename(cluster_id = cluster_id_public) %>% 
   filter(age_group == "0-5y")
 
@@ -39,6 +39,9 @@ clu_random_0to5_sf <- clu_random_0to5 %>%
 
 clu_sf <- clu_random_0to5_sf %>% 
   distinct(cluster_id, geometry)
+
+# save results?
+save_results <- FALSE
 ```
 
 ### Helper functions
@@ -523,23 +526,45 @@ glmnet_and_trach_time <- c(glmnet_and_trach, "survey")
 glmnet_and_trach_2_time <- c(glmnet_and_trach_2, "survey")
 
 ## create parameter combinations to iterate over
+# ALL: main manuscript + supporting information
+# cv_logistic_grid <- expand.grid(
+#   covariates = c("pcr_only", "sero_only",
+#                  "clin_only", "trach_ind",
+#                  "glmnet_vars_2", "glmnet_and_trach_2",
+#                  "sero_and_time", "glmnet_and_trach_2_time"),
+#   matern_var = c(NA, spaMM_matern, spaMM_matern_time),
+#   folds_name = c("random_folds_list", "loo_folds_list",
+#                  "block_folds_list_5", "block_folds_list_10",
+#                  "block_folds_list_15", "block_folds_list_20"),
+#   stringsAsFactors = FALSE) %>%
+#   mutate(outcome_var = "prevalence_pcr") %>% 
+#   # add possible lag/survey combinations
+#   crossing(expand.grid(outcome_survey = c(survey_list, -1), input_lag = survey_list) %>%
+#            filter(input_lag <= outcome_survey | outcome_survey == -1)) %>%
+#   # filter some combinations to reduce runtime
+#   filter((matern_var == spaMM_matern_time & covariates %in% c("sero_only", "glmnet_and_trach_2")) |
+#            is.na(matern_var) | matern_var != spaMM_matern_time) %>%
+#   # survey covariate only contributes when including covariates from >1 survey
+#   filter(!(covariates %in% c("sero_and_time", "glmnet_and_trach_2_time") & (outcome_survey != -1 | input_lag == 36))) %>% 
+#   # add index so that later can access results with best parameters in results list
+#   mutate(param_index = row_number()) %>%
+#   as.data.frame()
+
+# SHORT: main manuscript only
 cv_logistic_grid <- expand.grid(
   covariates = c("pcr_only", "sero_only",
                  "clin_only", "trach_ind",
-                 "glmnet_vars_2", "glmnet_and_trach_2",
-                 "sero_and_time", "glmnet_and_trach_2_time"),
-  matern_var = c(NA, spaMM_matern, spaMM_matern_time),
-  folds_name = c("random_folds_list", "loo_folds_list",
-                 "block_folds_list_5", "block_folds_list_10",
-                 "block_folds_list_15", "block_folds_list_20"),
+                 "glmnet_vars_2", "glmnet_and_trach_2"),
+  matern_var = c(NA, spaMM_matern),
+  folds_name = c("block_folds_list_15"),
   stringsAsFactors = FALSE) %>%
   mutate(outcome_var = "prevalence_pcr") %>% 
   # add possible lag/survey combinations
-  crossing(expand.grid(outcome_survey = c(survey_list, -1), input_lag = survey_list) %>%
+  crossing(expand.grid(outcome_survey = c(36), input_lag = survey_list) %>%
            filter(input_lag <= outcome_survey | outcome_survey == -1)) %>%
   # filter some combinations to reduce runtime
-  filter((matern_var == spaMM_matern_time & covariates %in% c("sero_only", "glmnet_and_trach_2")) |
-           is.na(matern_var) | matern_var != spaMM_matern_time) %>%
+  filter((matern_var == spaMM_matern & covariates %in% c("sero_only", "glmnet_and_trach_2")) |
+           is.na(matern_var)) %>%
   # survey covariate only contributes when including covariates from >1 survey
   filter(!(covariates %in% c("sero_and_time", "glmnet_and_trach_2_time") & (outcome_survey != -1 | input_lag == 36))) %>% 
   # add index so that later can access results with best parameters in results list
@@ -547,7 +572,7 @@ cv_logistic_grid <- expand.grid(
   as.data.frame()
 
 ## iterate through parameters
-# approx runtime on 4 cores: 1 hr
+# approx runtime for all on 4 cores: 60 minutes
 cv_logistic_results <- pbmcapply::pbmclapply(
   1:nrow(cv_logistic_grid),
   function(x){
@@ -724,13 +749,30 @@ fit_superlearner <- function(input_df, outcome_var, outcome_survey, input_lag, c
 
 ```{r sl_results}
 ## create iterations for superlearner models
-sl_grid <- expand.grid(sl_method = c("glm", "nnls", "nnls-convex", "spaMM", "spaMM-matern"),
-                       folds_name = c("loo_folds_list", "random_folds_list",
-                                      "block_folds_list_5", "block_folds_list_10",
-                                      "block_folds_list_15", "block_folds_list_20"),
+# ALL: main manuscript + supporting information
+# sl_grid <- expand.grid(sl_method = c("glm", "nnls", "nnls-convex", "spaMM", "spaMM-matern"),
+#                        folds_name = c("loo_folds_list", "random_folds_list",
+#                                       "block_folds_list_5", "block_folds_list_10",
+#                                       "block_folds_list_15", "block_folds_list_20"),
+#                        stringsAsFactors = FALSE) %>%
+#   # add possible lag/survey combinations
+#   crossing(expand.grid(outcome_survey = c(survey_list, -1), input_lag = survey_list) %>%
+#            filter(input_lag <= outcome_survey | outcome_survey == -1)) %>%
+#   mutate(outcome_var = "prevalence_pcr",
+#          covariates = "glmnet_and_trach_2") %>% 
+#   # limit to combinations required for figures since runtime is long
+#   filter(folds_name != "loo_folds_list" |
+#            (folds_name == "loo_folds_list" & outcome_survey == 36 & sl_method == "spaMM-matern")) %>%
+#   filter(sl_method == "spaMM-matern" | (folds_name == "block_folds_list_15" & outcome_survey == 36)) %>% 
+#   filter(folds_name == "block_folds_list_15" | outcome_survey == 36) %>% 
+#   as.data.frame()
+
+# SHORT: main manuscript only
+sl_grid <- expand.grid(sl_method = c("spaMM-matern"),
+                       folds_name = c("block_folds_list_15"),
                        stringsAsFactors = FALSE) %>%
   # add possible lag/survey combinations
-  crossing(expand.grid(outcome_survey = c(survey_list, -1), input_lag = survey_list) %>%
+  crossing(expand.grid(outcome_survey = c(36), input_lag = survey_list) %>%
            filter(input_lag <= outcome_survey | outcome_survey == -1)) %>%
   mutate(outcome_var = "prevalence_pcr",
          covariates = "glmnet_and_trach_2") %>% 
@@ -742,7 +784,7 @@ sl_grid <- expand.grid(sl_method = c("glm", "nnls", "nnls-convex", "spaMM", "spa
   as.data.frame()
 
 ## iterate through parameters
-# approx runtime on 4 cores: 30 minutes
+# approx runtime for all on 4 cores: 30 minutes
 sl_results_all <- pbmcapply::pbmclapply(split(sl_grid, 1:nrow(sl_grid)),
                   function(x){
                     do.call(fit_superlearner, args = c(list(input_df = clu_random_0to5), as.list(x)))
@@ -758,68 +800,19 @@ sl_results <- sl_results_all %>%
   bind_rows()
 ```
 
-### Visualize results
+### Save results
 
-```{r cv_logistic_fig, fig.width = 8.5, fig.height = 3}
-## prepare dataframe -----
-fig_df <- cv_logistic_summary %>% mutate(sl = FALSE) %>% 
-  bind_rows(sl_summary %>% rename(mse = unwt_mse) %>% mutate(rmse = sqrt(mse), sl = TRUE)) %>% 
-  filter(outcome_survey == 36, folds_name == "block_folds_list_15") %>% 
-  # give covariates clean names for legend & set order
-  mutate(covariates_label = case_when(
-    covariates == "pcr_only" & is.na(matern_var) & !sl ~ "PCR",
-    covariates == "clin_only" & is.na(matern_var) & !sl ~ "Clinical TF/TI",
-    covariates == "sero_only" & is.na(matern_var) & !sl ~ "Serology",
-    covariates == "sero_only" & (matern_var == spaMM_matern) & !sl ~ "Serology + Matern",
-    covariates == "glmnet_vars_2" & is.na(matern_var) & !sl ~ "Geospatial features*",
-    covariates == "glmnet_vars_2" & (matern_var == spaMM_matern) & !sl ~ "Geospatial + Matern",
-    covariates == "glmnet_and_trach_2" & (matern_var == spaMM_matern) & !sl ~ "All trachoma + geospatial + Matern",
-    covariates == "glmnet_and_trach_2" & sl & sl_method == "spaMM-matern" ~ "All trachoma + geospatial + Matern, ensemble")) %>%
-  mutate(covariates_label = factor(covariates_label,
-                                   levels = c("PCR", "Clinical TF/TI",
-                                              "Serology", "Serology + Matern",
-                                              "Geospatial features*", "Geospatial + Matern",
-                                              "All trachoma + geospatial + Matern",
-                                              "All trachoma + geospatial + Matern, ensemble"))) %>%   
-  # remove all unnamed covariate groups
-  filter(!is.na(covariates_label)) %>%
-  # add lag label & set order of facets
-  mutate(lag_label = case_when(
-    input_lag == 0 ~ "Concurrent predictions",
-    input_lag == 12 ~ "Forward predictions, 12 months",
-    input_lag == 24 ~ "Forward predictions, 24 months",
-    input_lag == 36 ~ "Forward predictions, 36 months")) %>% 
-  mutate(lag_label = factor(lag_label, levels = c("Forward predictions, 36 months",
-                                                  "Forward predictions, 24 months",
-                                                  "Forward predictions, 12 months",
-                                                  "Concurrent predictions"))) %>% 
-  mutate_at(vars(r2, lower.ci, upper.ci, rmse), as.numeric)
+```{r}
+if(save_results){
+  write_rds(cv_logistic_results, file = here(output_path, paste0("cv_logistic_results_public", folds_seed, ".rds")))
+  write_rds(cv_logistic_summary, file = here(output_path, paste0("cv_logistic_summary_public", folds_seed, ".rds")))
+  write_rds(sl_results, file = here(output_path, paste0("sl_results_public", folds_seed, ".rds")))
+  write_rds(sl_summary, file = here(output_path, paste0("sl_summary_public", folds_seed, ".rds")))
+}
+```
 
-## plot ------
-fig_df %>% 
-  ggplot() +
-  geom_point(aes(x = lag_label, y = r2, color = covariates_label), position = position_dodge(width = 1)) +
-  geom_errorbar(aes(x = lag_label, y = r2, color = covariates_label, ymin = lower.ci, ymax = upper.ci),
-                position = position_dodge(width = 1), width = 0) +
-  geom_hline(yintercept = 0, color = "black", lty = "dotted") +
-  geom_label(aes(x = lag_label, y = -0.45, label = sprintf(rmse, fmt = "%0.2f"), color = covariates_label),
-            position = position_dodge(width = 1), size = 2, alpha = 0.5, label.padding = unit(0.1, "lines"),
-            show.legend = FALSE) + # add text labels for RMSE
-  scale_color_manual(values = c(RColorBrewer::brewer.pal(n = 8, name = "Dark2"), "black")) +
-  coord_cartesian(ylim = c(-0.5,1)) + # limit display of y-values
-  facet_wrap(.~lag_label, nrow = 1, scales = "free_x") +
-  labs(y = expression(paste("Cross-validated ", R^2)), color = "Model specification",
-       caption = "*Includes 12-month precipitation and night light radiance as selected by LASSO") +
-  theme_classic() +
-  theme(legend.position = "bottom",
-        axis.ticks.x = element_blank(),
-        axis.text.x = element_blank(),
-        axis.title.x = element_blank(),
-        axis.title.y = element_text(size = 12),
-        panel.grid.major = element_line(color = "grey95"),
-        legend.text = element_text(size = 7),
-        legend.title = element_text(size = 8),
-        legend.key.height = unit(0.5, 'cm'),
-        plot.caption = element_text(hjust = 0)) + # align caption to left
-  guides(colour = guide_legend(nrow = 2, byrow = TRUE))
+### Session info
+
+```{r}
+sessionInfo()
 ```

@@ -1,7 +1,7 @@
 ---
-title: "SWIFT spatial: spatial and temporal autocorrelation"
+title: "SWIFT spatial: spatial autocorrelation"
 author: "Christine Tedijanto christine.tedijanto@ucsf.edu"
-date: "Last updated: 09/23/2021"
+date: "Last updated: 09/23/2021, cleaned: 02/28/2022"
 output:
     html_document:
       toc: true
@@ -13,14 +13,14 @@ output:
 number_sections: false
 ---
 
-**Objective:** Explore spatial and temporal autocorrelation in trachoma indicators in preparation for model building.
+**Objective:** Explore spatial autocorrelation in trachoma indicators in preparation for model building.
 
 ```{r setup, message = FALSE}
 library(here)
-source(here("..", "0-config.R"))
+source(here("0-config.R"))
 
 # read in data
-clu_random_0to5 <- readRDS(file = here(data_path, "3-public", "clu_random_modeldata_public.rds")) %>%
+clu_random_0to5 <- readRDS(file = here(data_path, "clu_random_modeldata_public.rds")) %>%
   rename(cluster_id = cluster_id_public) %>% 
   filter(age_group == "0-5y")
 
@@ -33,9 +33,9 @@ clu_sf <- clu_random_0to5_sf %>%
   distinct(cluster_id, geometry)
 ```
 
-### Spatial: Moran's I
+### Moran's I
 
-Moran's I measures global spatial autocorrelation (i.e. how similar one point is to others around it). Like a correlation coefficient, Moran's I ranges from -1 to 1. The expected value of Moran's I is slightly negative, approaching zero with increasing sample size. GeoDa (by Luc Anselin, et al.) has a helpful resource on Moran's I [here](https://geodacenter.github.io/workbook/5a_global_auto/lab5a.html). Inference can be conducted under an assumption of normality (shown here) or by permutation. 
+Moran's I measures global spatial autocorrelation (i.e. how similar one point is to others around it). Like a correlation coefficient, Moran's I ranges from -1 to 1. The expected value of Moran's I is slightly negative, approaching zero with increasing sample size. GeoDa (by Luc Anselin, et al.) has a helpful resource on Moran's I [here](https://geodacenter.github.io/workbook/5a_global_auto/lab5a.html). Inference can be conducted under an assumption of normality (shown here) or by permutation (see `.Rmd` for figures). 
 
 ```{r moran, fig.width = 8.5}
 get_moran <- function(outcome_var, curr_survey){
@@ -85,7 +85,7 @@ knitr::kable(x = moran_results %>% dplyr::select(outcome_var, curr_survey, obser
   digits = 4)
 ```
 
-### Spatial: variograms
+### Variograms
 
 ```{r}
 # create SpatialPointsDataFrame for clusters to allow for variogram building
@@ -215,13 +215,16 @@ get_variog_perms <- function(input_df, input_formula, input_survey, n_permute){
 }
 ```
 
+**Estimate variograms and run permutations:**
+
 ```{r}
 ## iterate through formulas, surveys, and models
 # 200 permutations takes ~1.1 minutes per formula
 # 1000 permutations takes ~6.1 minutes per formula
-n_permute_variog <- 200
+n_permute_variog <- 1000
 variog_formula_list <- c("prevalence_pcr~1", "prevalence_sero~1", "prevalence_clin~1",
                          "prevalence_pcr~lat+lon", "prevalence_sero~lat+lon", "prevalence_clin~lat+lon")
+
 variog_results <- mapply(get_variogram,
                          input_formula = rep(variog_formula_list, each = 8),
                          input_survey = rep(rep(survey_list, 2), 6), 
@@ -242,6 +245,8 @@ variog_expvar_df <- variog_results[3,] %>% bind_rows()
 variog_perm_results_df <- variog_perm_results[1,] %>% bind_rows()
 ```
 
+**Plot variograms:**
+
 ```{r, fig.width = 8.5, fig.height = 6.5}
 ## plot variograms
 variog_colors <- c(#"Sph" = RColorBrewer::brewer.pal(n = 8, name = "Dark2")[7],
@@ -249,8 +254,6 @@ variog_colors <- c(#"Sph" = RColorBrewer::brewer.pal(n = 8, name = "Dark2")[7],
                    "Mat" = RColorBrewer::brewer.pal(n = 8, name = "Dark2")[5])
 
 ## `get_variog_plot`: plots variograms across 4 survey time points
-# variog_results
-# permute_results
 # returns figure containing 4 variogram plots, one for each survey point
 get_variog_plot <- function(permute_results, variog_line, variog_stats, variog_expvar, input_title){
   
@@ -334,8 +337,6 @@ variog_plots <- lapply(c("prevalence_pcr~1", "prevalence_sero~1", "prevalence_cl
 do.call(grid.arrange, args = c(variog_plots, ncol = 1))
 ```
 
-### Spatial: variograms after residualizing
-
 Calculation of the variogram depends on the assumption that the data does not have systematic surface trends (stationarity). Although it is generally difficult to distinguish between trends and autocorrelation (see example [here](https://pro.arcgis.com/en/pro-app/latest/help/analysis/geostatistical-analyst/understanding-how-to-remove-trends-from-the-data.htm)), it is typical to check for strong trends with a simple model. Here we detrend by latitude and longitude with a simple linear model; variograms are fairly similar to the non-residualized version above, indicating that there is not a strong east-west or north-south trend in this data.
 
 ```{r, fig.width = 8.5, fig.height = 6.5}
@@ -350,4 +351,10 @@ variog_plots_resid <- lapply(c("prevalence_pcr~lat+lon", "prevalence_sero~lat+lo
                                 )})
 
 do.call(grid.arrange, args = c(variog_plots_resid, ncol = 1))
+```
+
+### Session info
+
+```{r}
+sessionInfo()
 ```

@@ -1,0 +1,224 @@
+---
+title: "SWIFT spatial: descriptive analysis of predictor variables"
+author: "Christine Tedijanto christine.tedijanto@ucsf.edu"
+date: "Last updated: 09/21/2021, cleaned: 02/28/2022"
+output:
+    html_document:
+      toc: true
+      toc_float: true
+      toc_collapsed: true
+      toc_depth: 3
+      code_folding: hide
+      df_print: paged
+number_sections: false
+---
+
+**Objective:** Combine WUHA measurements and geospatial features into dataset for analysis.
+
+```{r setup, message = FALSE}
+library(here)
+source(here("0-config.R"))
+
+# read in data
+ind_all <- read_csv(here(data_path, "ind_all.csv"))
+clu_random_byage <- read_csv(here(data_path, "clu_random_byage.csv"))
+swift_spatial_features_annual <- readRDS(here(data_path, "swift_spatial_features_annual.rds"))
+swift_spatial_features_monthly <- readRDS(here(data_path, "swift_spatial_features_monthly.rds"))
+swift_spatial_features_static <- readRDS(here(data_path, "swift_spatial_features_static.rds"))
+load(here(data_path, "swift_spatial_data.Rda"))
+
+# list of months (yyyy-mm) from 2015 through 2018
+start_date_months <- start_dates %>% substr(start = 1, stop = 7)
+```
+
+### Helper functions
+
+```{r centroids}
+### pull values of spatial features by cluster centroids -----
+# features_sf: simple features dataset with features and corresponding geometries
+# centroids: simple features dataset with cluster ids and cluster centroids
+# returns data frame with cluster ids and corresponding feature values
+get_centroid_values <- function(features_sf, centroids){
+  
+  # check if both features and centroids are sf
+  if(("sf" %in% class(features_sf)) & ("sf" %in% class(centroids))){
+    
+    ret <- centroids %>%
+      st_join(features_sf, join = st_intersects, left = TRUE) %>%
+      st_drop_geometry()
+    
+    return(ret)
+  
+  } else {
+    print("both arguments must be spatial features objects")
+  }
+
+}
+```
+
+### Explore time-varying features
+
+Here, we compare different summaries of time-varying variables. If highly correlated, we will use just a single summary (e.g. annual) of the variable in our predictive model.
+
+```{r time_vars, fig.width = 8.5, fig.height = 10}
+### create summary (mean) vector of monthly values -----
+# df: dataframe where columns are stored, columns should be named <var>_<month>
+# var: variable to summarize over
+# months: months to summarize over
+# return vector of summary (same order as df rows)
+get_time_summary <- function(df, var, months){
+  
+  if("sf" %in% class(df)){
+    df <- df %>% st_drop_geometry()
+  }
+  
+  if(length(months) == 1){
+    ret <- df[,paste0(var,"_",months)]
+  } else {
+    ret <- rowMeans(df[,paste0(var,"_",months)], na.rm = TRUE)
+  }
+  
+  return(ret)
+  
+}
+
+plot_cor_over_time <- function(var){
+  
+  # get summaries over last few months for given variable
+  # apply over each survey time point
+  monthly_df <- lapply(survey_list,
+                       function(x){
+                         swift_spatial_features_monthly %>%
+                           st_drop_geometry() %>%
+                           mutate(last1mo = get_time_summary(., var, start_date_months[c(12)+x]),
+                                  last2mo = get_time_summary(., var, start_date_months[c(11:12)+x]),
+                                  last3mo = get_time_summary(., var, start_date_months[c(10:12)+x]),
+                                  last4mo = get_time_summary(., var, start_date_months[c(9:12)+x]),
+                                  last6mo = get_time_summary(., var, start_date_months[c(7:12)+x]),
+                                  last8mo = get_time_summary(., var, start_date_months[c(5:12)+x]),
+                                  last10mo = get_time_summary(., var, start_date_months[c(3:12)+x]),
+                                  last12mo = get_time_summary(., var, start_date_months[c(1:12)+x])) %>% 
+                           dplyr::select(starts_with("last"))
+                         }) %>% 
+    bind_rows()
+
+  # plot
+  monthly_df %>% 
+    dplyr::select(starts_with("last")) %>% 
+    cor(method = "pearson", use = "complete.obs") %>%
+    corrplot.mixed(lower = "number",
+                   upper = "ellipse",
+                   tl.pos = "d",
+                   tl.col = "black",
+                   number.cex = 0.7,
+                   tl.cex = 0.7,
+                   title = var,
+                   mar = c(0,0,2,0))
+}
+
+par(mfrow = c(3,2))
+plot_cor_over_time("surface_water") # surface water
+plot_cor_over_time("precip") # precipitation
+plot_cor_over_time("tmax") # max temp
+plot_cor_over_time("evi") # evi 
+plot_cor_over_time("avg_rad") # night light radiance
+```
+
+Based on the correlation plots, we will include the following summaries:
+
+-   surface_water: last 1 and 12 months
+-   precip: last 1, 2, 4, 12 months
+-   tmax: last 12 months
+-   evi: last 12 months
+-   avg_rad: last 12 months
+
+### Create merged dataset
+
+```{r merge, fig.height = 8.5, fig.width = 8.5}
+## create variable time summaries listed above -----
+temp_clu_features <- lapply(
+  survey_list,
+  function(x){
+    swift_spatial_features_monthly %>%
+      transmute(surface_water_1m = get_time_summary(., "surface_water", start_date_months[c(12)+x]),
+                surface_water_12m = get_time_summary(., "surface_water", start_date_months[c(1:12)+x]),
+                precip_1m= get_time_summary(., "precip", start_date_months[c(12)+x]),
+                precip_2m = get_time_summary(., "precip", start_date_months[c(11:12)+x]),
+                precip_4m = get_time_summary(., "precip", start_date_months[c(9:12)+x]),
+                precip_12m = get_time_summary(., "precip", start_date_months[c(1:12)+x]),
+                tmax_12m = get_time_summary(., "tmax", start_date_months[c(1:12)+x]),
+                evi_12m = get_time_summary(., "evi", start_date_months[c(1:12)+x]),
+                avg_rad_12m = get_time_summary(., "avg_rad", start_date_months[c(1:12)+x])) %>% 
+      mutate(survey = x)}) %>%
+  bind_rows() %>% 
+  st_join(swift_spatial_features_static, join = st_equals_exact, par = 0.00001)
+
+clu_features <- get_centroid_values(features_sf = temp_clu_features, centroids = cluster_sf)
+```
+
+```{r}
+## merge in outcomes and coordinates to create full dataset -----
+clu_random_modeldata <- clu_random_byage %>%
+  left_join(clu_features, by = c("cluster_id", "survey")) %>% 
+  left_join(cluster_sf %>%
+              rowwise() %>% 
+              mutate(lon = geometry[[1]][1],
+                     lat = geometry[[1]][2]) %>% 
+              ungroup() %>% 
+              st_drop_geometry(),
+            by = "cluster_id")
+```
+
+### Plot variable distributions
+
+```{r, fig.width = 8.5, fig.height = 11}
+clu_random_modeldata %>% 
+  filter(age_group == "0-5y") %>%
+  dplyr::select(-c(cluster_id, cluster_id_public, survey,
+                   age_group, arm, source_pcr, starts_with("n_"))) %>%
+  pivot_longer(cols = everything(), names_to = "col_var", values_to = "value") %>%
+  # order facets for readability
+  mutate(col_var = factor(col_var, levels = c("prevalence_pcr",
+                                              "prevalence_clin",
+                                              "prevalence_sero",
+                                              "prevalence_Pgp3",
+                                              "prevalence_Ct694",
+                                              "prevalence_tf",
+                                              "prevalence_ti",
+                                              "precip_1m",
+                                              "precip_2m",
+                                              "precip_4m",
+                                              "precip_12m",
+                                              "tmax_12m",
+                                              "surface_water_1m",
+                                              "surface_water_12m",
+                                              "evi_12m",
+                                              "elevation_2000",
+                                              "slope_2000",
+                                              "osm_residential_area_2020",
+                                              "hdx_building_count_2020",
+                                              "pop_2018",
+                                              "women_2019",
+                                              "under_5_2019",
+                                              "dist_to_road_2020",
+                                              "accesshc_2019",
+                                              "accesshcwalk_2019",
+                                              "avg_rad_12m"))) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram() +
+  facet_wrap(.~col_var, scales = "free", ncol = 4) +
+  theme_minimal()
+```
+
+### Save dataset
+
+```{r save}
+saveRDS(object = clu_random_modeldata,
+        file = here(data_path, "clu_random_modeldata.rds"))
+```
+
+### Session info
+
+```{r}
+sessionInfo()
+```

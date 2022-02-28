@@ -1,0 +1,669 @@
+---
+title: "SWIFT spatial: extract geospatial features"
+author: "Christine Tedijanto christine.tedijanto@ucsf.edu"
+date: "Last updated: 06/08/2021, cleaned: 02/28/2022"
+output:
+  html_document:
+      toc: true
+      toc_float: true
+      toc_collapsed: true
+      toc_depth: 3
+      code_folding: hide
+      df_print: paged
+number_sections: false
+---
+
+**Objective**: Extract the geospatial predictor variables.
+
+```{r setup, message = FALSE}
+library(here)
+source(here("0-config.R"))
+
+# load spatial data
+load(here(data_path, "swift_spatial_data.Rda"))
+
+# initialize google earth engine connection
+# replace email below to initialize
+ee_Initialize(email = "xx@gmail.com")
+```
+
+### Helper functions
+
+```{r extract_func}
+# extract a single image over the SWIFT bounding box
+swift_extr_image <- function(input_image, input_scale){
+  
+  ret <- ee_extract(x = input_image,
+                    y = sf_as_ee(swift_feature_grid), 
+                    fun = ee$Reducer$mean(), # spatial reduction
+                    # nominal scale in m of the Image projection; default = 100
+                    scale = input_scale, # use native resolution when possible
+                    sf = TRUE)
+  
+  return(ret)
+}
+
+# extract an image collection over the SWIFT bounding box and given input dates
+swift_extr_imagecoll <- function(input_data, input_start, input_end, input_var){
+  
+  ret <- ee$ImageCollection(input_data)$
+    filterBounds(sf_as_ee(st_as_sfc(swift_bbox)))$ # limit area to bounding box
+    filterDate(input_start, input_end)$
+    select(input_var)$
+    mean() # temporal reduction: e.g., takes the mean of daily values over selected time period
+  
+  return(ret)
+}
+
+# return sf dataframe based on monthly image collection
+imagecoll_to_df <- function(input_imagecoll, input_scale, input_var,
+                            input_var_name, input_dates){
+  
+  ret <- lapply(
+    1:length(input_imagecoll),
+    function(x){
+      swift_extr_image(input_image = input_imagecoll[[x]],
+                       input_scale = input_scale) %>%
+        # rename columns with variable name and month start date
+        rename(!!paste0(input_var_name, substr(input_dates[x],1,7)):=all_of(input_var))
+    }) %>% 
+    reduce(st_join, join=st_equals_exact, par=0.00001) # merge dataframes on geometry
+  
+  return(ret)
+}
+```
+
+### [Temperature: TerraClimate](https://developers.google.com/earth-engine/datasets/catalog/IDAHO_EPSCOR_TERRACLIMATE)
+
+-   Spatial resolution: 2.5 arc minutes (\~4520m)
+-   Temporal resolution: monthly
+-   Variable units: degrees Celsius \* 10 (based on [WorldClim documentation](https://worldclim.org/data/v1.4/formats.html))
+-   Dates available: 01/01/1958-12/01/2019
+
+Based on WorldClim (climatological normals), CRU Ts4.0 and JRA55.
+
+```{r terraclimate}
+# extract monthly minimum temperature
+terraclimate_tmin_imagecoll <- lapply(1:length(start_dates),
+                                      function(x)
+                                        swift_extr_imagecoll(
+                                          input_data = "IDAHO_EPSCOR/TERRACLIMATE",
+                                          input_start = start_dates[x],
+                                          input_end = end_dates[x],
+                                          input_var = "tmmn"))
+
+terraclimate_tmin_monthly <- imagecoll_to_df(input_imagecoll = terraclimate_tmin_imagecoll,
+                                             input_scale = 4520,
+                                             input_var = "tmmn",
+                                             input_var_name = "tmin_",
+                                             input_dates = start_dates) %>%
+  mutate_at(vars(starts_with("tmin")), ~ .x / 10) # divide by 10 to change units to degrees C
+
+# extract monthly maximum temperature
+terraclimate_tmax_imagecoll <- lapply(1:length(start_dates),
+                                      function(x)
+                                        swift_extr_imagecoll(
+                                          input_data = "IDAHO_EPSCOR/TERRACLIMATE",
+                                          input_start = start_dates[x],
+                                          input_end = end_dates[x],
+                                          input_var = "tmmx"))
+
+terraclimate_tmax_monthly <- imagecoll_to_df(input_imagecoll = terraclimate_tmax_imagecoll,
+                                             input_scale = 4520,
+                                             input_var = "tmmx",
+                                             input_var_name = "tmax_",
+                                             input_dates = start_dates) %>%
+  mutate_at(vars(starts_with("tmax")), ~ .x / 10) # divide by 10 to change units to degrees C
+```
+
+### [Precipitation: CHIRPS](https://developers.google.com/earth-engine/datasets/catalog/UCSB-CHG_CHIRPS_DAILY)
+
+-   Spatial resolution: 0.05 arc degrees (\~5424m)
+-   Temporal resolution: daily
+-   Variable units: mm
+-   Dates available: 01/01/1981-08/31/2020
+
+```{r chirps}
+# extract mean daily precipitation in each grid cell
+chirps_precip_imagecoll <- lapply(1:length(start_dates),
+                                  function(x)
+                                    swift_extr_imagecoll(
+                                      input_data = "UCSB-CHG/CHIRPS/DAILY",
+                                      input_start = start_dates[x],
+                                      input_end = end_dates[x],
+                                      input_var = "precipitation"))
+
+chirps_precip_monthly <- imagecoll_to_df(input_imagecoll = chirps_precip_imagecoll,
+                                         input_scale = 5424,
+                                         input_var = "precipitation",
+                                         input_var_name = "precip_",
+                                         input_dates = start_dates)
+```
+
+### [Elevation and slope: SRTM](https://developers.google.com/earth-engine/datasets/catalog/CGIAR_SRTM90_V4)
+
+-   Spatial resolution: 90m
+-   Temporal resolution: static
+-   Variable units: m
+-   Dates available: 02/11/2000-02/22/2000
+
+```{r srtm}
+# extract SRTM elevation
+srtm_image <- ee$Image("CGIAR/SRTM90_V4")$select("elevation")
+srtm_elevation <- swift_extr_image(input_image = srtm_image, input_scale = 90) %>%
+  mutate(elevation = elevation / 1000) %>%  # parameterize as kilometers instead of m
+  rename(elevation_2000 = elevation) # add year to variable name
+
+# extract slope in degrees (computed from SRTM elevation)
+srtm_slope <- swift_extr_image(input_image = ee$Terrain$slope(srtm_image),
+                               input_scale = 90) %>%
+  rename(slope_2000 = slope) # add year to variable name
+```
+
+### [Surface water: Joint Research Center Global Surface Water (GSW)](https://developers.google.com/earth-engine/datasets/catalog/JRC_GSW1_2_MonthlyHistory)
+
+-   Spatial resolution: 30m
+-   Temporal resolution: monthly
+-   Variable units: 0=no data, 1=not water, 2=water (stored as Bitmask, bits:0-1)
+-   Dates available: 03/16/1984-12/31/2019
+
+Based on Landsat images. To keep it simple, create binary variable for each grid cell that is 1 if any surface water identified in that cell in the month and 0 otherwise.
+
+```{r gsw}
+# extract monthly historical surface water
+gsw_imagecoll <- lapply(1:length(start_dates),
+                        function(x)
+                          swift_extr_imagecoll(
+                            input_data = "JRC/GSW1_2/MonthlyHistory",
+                            input_start = start_dates[x],
+                            input_end = end_dates[x],
+                            input_var = "water"))
+
+gsw_monthly <- lapply(
+  1:length(gsw_imagecoll),
+  function(x){
+    ee_extract(x = gsw_imagecoll[[x]],
+               y = sf_as_ee(swift_feature_grid), 
+               fun = ee$Reducer$max(), # change to max
+               scale = 30,
+               sf = TRUE) %>%
+      # create binary water variable
+      # name with variable name and month start date
+      mutate(!!paste0("surface_water_", substr(start_dates[x],1,7)) := case_when(
+        water == 2 ~ 1,
+        water == 1 ~ 0
+        )) %>%
+      # remove water column
+      dplyr::select(-c(water))
+    }) %>%
+  reduce(st_join, join=st_equals_exact, par = 0.00001)  # merge dataframes on geometry
+```
+
+### [Vegetation: MODIS](https://developers.google.com/earth-engine/datasets/catalog/MODIS_006_MOD13Q1)
+
+-   Spatial resolution: 250m
+-   Temporal resolution: 16-day period
+-   Units: unit-less
+-   Dates available: 02/18/2000-10/15/2020
+
+Based on the Huete, et al. paper (2002, Remote Sensing of Environment), NDVI is more chlorophyll sensitive, and EVI is more responsive to canopy structural variations, including leaf area index (LAI), canopy type, plant physiognomy, and canopy architecture. The two indices complement each other in global vegetation studies. There are also several quality variables included with the dataset; the 'Summary QA' categorical variable is described below. The quality variables have not yet been incorporated into the analysis.
+
+Summary QA classes:
+
+-   0 Good Data: use with confidence
+-   1 Marginal Data: useful, but look at other QA information
+-   2 Snow/Ice: target covered with snow/ice
+-   3 Cloudy: target not visible, covered with cloud
+
+```{r veg}
+# extract NDVI (Normalized Difference Vegetation Index)
+veg_ndvi_imagecoll <- lapply(1:length(start_dates),
+                             function(x)
+                               swift_extr_imagecoll(
+                                 input_data = "MODIS/006/MOD13Q1",
+                                 input_start = start_dates[x],
+                                 input_end = end_dates[x],
+                                 input_var = "NDVI"))
+
+veg_ndvi_monthly <- imagecoll_to_df(input_imagecoll = veg_ndvi_imagecoll,
+                                    input_scale = 250,
+                                    input_var = "NDVI",
+                                    input_var_name = "ndvi_",
+                                    input_dates = start_dates)
+
+# extract EVI (Enhanced Vegetation Index)
+veg_evi_imagecoll <- lapply(1:length(start_dates),
+                            function(x)
+                              swift_extr_imagecoll(
+                                input_data = "MODIS/006/MOD13Q1",
+                                input_start = start_dates[x],
+                                input_end = end_dates[x],
+                                input_var = "EVI"))
+
+veg_evi_monthly <- imagecoll_to_df(input_imagecoll = veg_evi_imagecoll,
+                                   input_scale = 250,
+                                   input_var = "EVI",
+                                   input_var_name = "evi_",
+                                   input_dates = start_dates)
+```
+
+### [Distance to roads: OpenStreetMap (OSM) & Humanitarian Data Exchange (HDX)](https://data.humdata.org/dataset/hotosm_eth_roads)
+
+HDX download details:
+
+-   Date of dataset: 07/01/2020
+-   Updated: 07/01/2020
+-   Date accessed: 03/05/2021
+
+More documentation on OpenStreetMap highways can be found on their Wiki [here](https://wiki.openstreetmap.org/wiki/Key:highway). We considered all items classified as 'roads' without 'residential' (motorway, trunk, primary, secondary, tertiary, unclassified). Highways tagged as 'residential' serve as an access to housing without the function of connecting settlements. Code to pull highways from OpenStreetMap API also included here, but data seems to be much more sparse than the HDX version.
+
+```{r osm_streets, message = FALSE}
+## OSM DATA (from API)
+# osm_highways_query <- opq(bbox = swift_bbox) %>% 
+#  add_osm_feature(key = "highway", value = "road") %>% 
+#  osmdata_sf()
+# osm_highways <- osm_highways_query$osm_polygons
+
+## HDX DATA
+# load data from shp file
+hdx_highways <- st_read(here(data_path, "hdx", "hotosm_eth_roads_lines_shp",
+                             "hotosm_eth_roads_lines.shp"), quiet = TRUE) %>% 
+  st_transform(crs = swift_crs)
+
+# check for missing labels
+# print message if any labels are missing
+if(sum(is.na(hdx_highways$highway))>0){print("Some HDX highway labels are missing.")}
+
+# select for larger roads (see OSM highway documentation)
+hdx_highways_roads <- hdx_highways %>% 
+  filter(highway %in% c("unclassified", "primary", "secondary", "tertiary", "trunk", "motorway"))
+
+# calculate distances from grid centroids to nearest road
+# takes ~5 minutes to run
+swift_feature_grid_centroids <- swift_feature_grid %>% st_centroid()
+dist_to_roads <- st_sf(dist_to_road_2020 = sapply(
+  1:length(swift_feature_grid_centroids),
+  function(x) min(st_distance(swift_feature_grid_centroids[x], hdx_highways_roads))
+  ),
+  geometry = swift_feature_grid,
+  crs = swift_crs) %>%
+  mutate(dist_to_road_2020 = dist_to_road_2020 / 1000) # in km
+```
+
+### [Residential structure density: OSM & HDX](https://data.humdata.org/dataset/hotosm_eth_buildings)
+
+HDX download details:
+
+-   Date of dataset: 07/01/2020
+-   Updated: 07/01/2020
+-   Date accessed: 03/05/2021
+
+More documentation can be found on the OpenStreetMap [building](https://wiki.openstreetmap.org/wiki/Key:building) and [residential landuse](https://wiki.openstreetmap.org/wiki/Tag:landuse%3Dresidential) Wiki pages. Data from the OSM API appears to contain more buildings (of any type) in the SWIFT study area than the HDX data. Buildings were not restricted to residential because there were zero hits (building=residential) from the OSM API over the SWIFT study area. When not restricting to residential, building counts did not align well with residential landuse (perhaps because more buildings tend to be in more commercial areas).
+
+```{r osm_residential, message = FALSE, results = "hide"}
+## OSM DATA
+# version 1. based on residential landuse information
+osm_residential_query <- opq(bbox = swift_bbox) %>% 
+  add_osm_feature(key = "landuse", value = "residential") %>% 
+  osmdata_sf()
+
+osm_residential_sf <- osm_residential_query$osm_polygons %>% 
+  st_transform(crs = swift_crs)
+
+# determine overlap polygons between residential areas and SWIFT grid
+osm_res_overlap <- sapply(
+  c(1:length(swift_feature_grid)),
+  function(x) st_intersection(swift_feature_grid[x], osm_residential_sf)
+  )
+# calculate area of overlapping polygons within each SWIFT grid cell
+osm_res_overlap_area <- sapply(osm_res_overlap, function(x) sum(st_area(x)))
+# calculate total area of each SWIFT grid cell
+swift_feature_grid_area <- st_area(swift_feature_grid)
+# calculate proportion of each grid cell's area that is residential
+osm_residential_area <- as.numeric(osm_res_overlap_area/swift_feature_grid_area)
+
+# version 2. based on building locations 
+# current set to any building and seems to be sparse over SWIFT area
+# not filtered for housing/residential buildings
+osm_building_query <- opq(bbox = swift_bbox) %>% 
+  add_osm_feature(key = "building", value = "yes") %>% 
+  osmdata_sf()
+
+osm_building_sf <- osm_building_query$osm_points %>% 
+  st_transform(crs = swift_crs)
+
+# count # of buildings in each SWIFT grid cell
+# first, join all building points to grid cell they are in
+osm_building_in_swift <- st_join(osm_building_sf, 
+                                 data.frame(geometry = swift_feature_grid,
+                                            index = 1:length(swift_feature_grid)) %>%
+                                   st_as_sf(crs = swift_crs),
+                                 join = st_within) %>%
+  count(index) %>% # count rows by grid cell index
+  st_drop_geometry() %>% 
+  # rejoin grid geometries
+  right_join(data.frame(geometry = swift_feature_grid,
+                        index = 1:length(swift_feature_grid)), by = "index") %>%
+  st_as_sf(crs = swift_crs) %>% 
+  mutate(osm_building_count_2020 = replace_na(n, 0)) %>%
+  mutate(osm_residential_area_2020 = osm_residential_area) %>% 
+  dplyr::select(-c(index, n)) 
+
+## HDX DATA
+# not filtered for housing/residential buildings
+hdx_building <- st_read(here(data_path, "hdx", "hotosm_eth_buildings_polygons_shp",
+                             "hotosm_eth_buildings_polygons.shp"), quiet = TRUE) %>% 
+  st_transform(crs=swift_crs)
+
+# count # of buildings in each SWIFT grid cell
+# use intersects because buildings are mapped as polygons in this dataset
+hdx_building_in_swift <- st_join(hdx_building,
+                                 data.frame(geometry = swift_feature_grid,
+                                            index = 1:length(swift_feature_grid)) %>%
+                                   st_as_sf(crs = swift_crs),
+                                 # use intersects because buildings are mapped as polygons
+                                 join = st_intersects) %>%
+  drop_na(index) %>% # drop buildings that don't map to any grid cell
+  count(index) %>%
+  st_drop_geometry() %>% 
+  right_join(data.frame(geometry = swift_feature_grid,
+                        index = 1:length(swift_feature_grid)), by = "index") %>%
+  st_as_sf(crs = swift_crs) %>% 
+  mutate(hdx_building_count_2020 = replace_na(n, 0)) %>% 
+  dplyr::select(-c(index, n))
+```
+
+### [Population density, age and sex distribution: Facebook High Resolution Settlement Layer (HRSL)](https://data.humdata.org/dataset/ethiopia-high-resolution-population-density-maps-demographic-estimates)
+
+-   Spatial resolution: 1 arc second (approximately 30m)
+-   Date of dataset: 08/04/2019
+-   Updated: 02/06/2020
+-   Date accessed: 10/05/2020
+
+Data comes in WGS84 (see [raster metadata](https://dataforgood.fb.com/docs/high-resolution-population-density-maps-demographic-estimates-documentation/#data-format)).
+
+```{r hrsl, message = FALSE, results = "hide"}
+hrsl_women_raster <- raster(here(data_path, "hrsl", "ETH_women.tif"))
+hrsl_under_5_raster <- raster(here(data_path, "hrsl","ETH_children_under_five.tif"))
+hrsl_pop_raster <- raster(here(data_path, "hrsl", "population_eth_2018-10-01.tif"))
+
+# extract data to SWIFT grid and make sf object
+# take sum since values are provided as # of individuals in that group per grid cell
+hrsl <- data.frame(
+  geometry = swift_feature_grid,
+  pop_2018 = exact_extract(x = hrsl_pop_raster, y = swift_feature_grid, fun = 'sum'),
+  women_2019 = exact_extract(x = hrsl_women_raster, y = swift_feature_grid, fun = 'sum'),
+  under_5_2019 = exact_extract(x = hrsl_under_5_raster, y = swift_feature_grid, fun = 'sum')
+  ) %>%
+  # represent women and under 5s as a proportion of population
+  mutate(women_2019 = women_2019/pop_2018,
+         under_5_2019 = under_5_2019/pop_2018) %>% 
+  st_as_sf(crs = swift_crs)
+```
+
+### [Poverty: VIIRS Nighttime Lights](https://developers.google.com/earth-engine/datasets/catalog/NOAA_VIIRS_DNB_MONTHLY_V1_VCMCFG#description)
+
+-   Spatial resolution: 15 arc seconds (\~452m)
+-   Temporal resolution: monthly
+-   Variable units: nanoWatts/cm2/sr
+-   Dates available: 04/01/2012-04/01/2020
+
+This dataset also includes a quality metric called cloud-free coverage (`cf_cvg`) which records the total number of observations that went into each pixel. In this analysis, we masked pixel values with fewer than or equal to 5 cloud-free coverage days. After reducing, any grid cell with a negative radiance value was set to NA.
+
+```{r viirs}
+# extract average radiance values
+viirs_rad_imagecoll <- lapply(1:length(start_dates),
+                              function(x) swift_extr_imagecoll(
+                                input_data = "NOAA/VIIRS/DNB/MONTHLY_V1/VCMCFG",
+                                input_start = start_dates[x],
+                                input_end = end_dates[x],
+                                input_var = "avg_rad"))
+
+# extract monthly data without any changes
+viirs_rad_monthly <- imagecoll_to_df(input_imagecoll = viirs_rad_imagecoll,
+                                     input_scale = 452,
+                                     input_var = "avg_rad",
+                                     input_var_name = "avg_rad_",
+                                     input_dates = start_dates)
+
+# extract monthly data using max
+# set negative radiance values or low cf_cvg (<=5) to NA
+viirs_rad_monthly_filter <- lapply(
+  1:length(viirs_rad_imagecoll),
+  function(x){
+
+    # pull image with same dates for mask
+    mask_image <- ee$ImageCollection("NOAA/VIIRS/DNB/MONTHLY_V1/VCMCFG")$
+      filterBounds(sf_as_ee(st_as_sfc(swift_bbox)))$
+      filterDate(start_dates[x], end_dates[x])$
+      select('cf_cvg')$
+      mean()$ # take mean to reduce collection to a single image
+      gt(5)
+    
+    # update mask
+    temp_image <- viirs_rad_imagecoll[[x]]$updateMask(mask_image)
+    
+    # reduce and extract image
+    temp_result <- ee_extract(x = temp_image,
+                              y = sf_as_ee(swift_feature_grid), 
+                              fun = ee$Reducer$mean(), # spatial reduction
+                              scale = 452,
+                              sf = TRUE)
+    
+    # for 08-2018, all are masked!
+    if("avg_rad" %ni% names(temp_result)){
+      temp_result$avg_rad <- NA
+    }
+      # rename columns with variable name and month start date
+    temp_result %>% rename(!!paste0("avg_rad_", substr(start_dates[x],1,7)):=all_of("avg_rad"))
+    
+  }) %>%
+  reduce(st_join, join=st_equals_exact, par=0.00001) %>% # merge dataframes on geometry
+  mutate_at(vars(starts_with("avg_rad")), ~replace(., .<0, NA)) # if neg, replace with NA
+```
+
+### [Accessibility to healthcare](https://developers.google.com/earth-engine/datasets/catalog/Oxford_MAP_accessibility_to_healthcare_2019?hl=sr)
+
+-   Spatial resolution: 30 arc seconds (\~904m)
+-   Temporal resolution: static
+-   Variable units: land-based travel time in minutes
+-   Dates available: 2019
+
+```{r accesstohealthcare}
+# extract accessibility to healthcare
+accesshc_image <- ee$Image("Oxford/MAP/accessibility_to_healthcare_2019")$select("accessibility")
+accesshc <- swift_extr_image(input_image = accesshc_image, input_scale = 904) %>%
+  rename(accesshc_2019 = accessibility)
+
+# extract accessibility to healthcare using non-motorized transport
+accesshcwalk_image <- ee$Image("Oxford/MAP/accessibility_to_healthcare_2019")$select("accessibility_walking_only")
+accesshcwalk <- swift_extr_image(input_image = accesshcwalk_image, input_scale = 904) %>%
+  rename(accesshcwalk_2019 = accessibility_walking_only)
+```
+
+### Save merged feature datasets
+
+```{r combined_df}
+## merge and save features that are static (only measured at one point/window in time)
+# year at end of variable indicates when data was collected
+swift_spatial_features_static <- list(srtm_elevation,
+                                      srtm_slope,
+                                      dist_to_roads,
+                                      osm_building_in_swift,
+                                      hdx_building_in_swift,
+                                      hrsl,
+                                      accesshc,
+                                      accesshcwalk) %>% 
+  reduce(st_join, join = st_equals_exact, par = 0.00001) # require nearly exact match between geometries to match values (they should be exact, since from same grid)
+
+## merge and save features that vary by month
+swift_spatial_features_monthly <- list(terraclimate_tmin_monthly,
+                                       terraclimate_tmax_monthly,
+                                       chirps_precip_monthly,
+                                       gsw_monthly,
+                                       veg_ndvi_monthly,
+                                       veg_evi_monthly,
+                                       viirs_rad_monthly_filter) %>% 
+  reduce(st_join, join = st_equals_exact, par = 0.00001) # require nearly exact match between geometries to match values (they should be exact, since from same grid)
+
+## summarize monthly features by year and save
+summarize_monthly_features <- function(df_name, feat_name, year){
+  get(df_name) %>% 
+    mutate(!!paste0(feat_name, "_", year) := rowMeans(across(contains(year)),
+                                                      na.rm = TRUE)) %>% 
+    dplyr::select(geometry, paste0(feat_name, "_", year))
+}
+
+temp_grid <- data.frame(df_name = c("terraclimate_tmin_monthly",
+                                    "terraclimate_tmax_monthly",
+                                    "chirps_precip_monthly",
+                                    "gsw_monthly",
+                                    "veg_ndvi_monthly",
+                                    "veg_evi_monthly",
+                                    "viirs_rad_monthly_filter"),
+                        feat_name = c("tmin",
+                                      "tmax",
+                                      "precip",
+                                      "surface_water",
+                                      "ndvi",
+                                      "evi",
+                                      "avg_rad")) %>% 
+  crossing(year = c("2015", "2016", "2017", "2018"))
+
+swift_spatial_features_annual <- lapply(
+  split(temp_grid, 1:nrow(temp_grid)),
+  function(x) do.call(summarize_monthly_features, args = as.list(x))
+  ) %>% 
+  reduce(st_join, join = st_equals_exact, par = 0.00001) # require nearly exact match between geometries to match values (they should be exact, since from same grid)
+```
+
+### Save datasets 
+
+```{r}
+saveRDS(object = swift_spatial_features_static,
+        file = here(data_path, "swift_spatial_features_static.rds"))
+  
+saveRDS(object = swift_spatial_features_monthly,
+        file = here(data_path, "swift_spatial_features_monthly.rds"))
+
+saveRDS(object = swift_spatial_features_annual,
+        file = here(data_path, "swift_spatial_features_annual.rds"))
+```
+
+### Visualize features - annual
+
+```{r map_viz, echo = FALSE, message = FALSE, fig.width = 9, fig.height = 28}
+get_swift_map_year <- function(df, input_var, input_label, fill_max, fill_min, year){
+  ret <- ggmap::get_stamenmap(swift_bbox) %>% 
+    ggmap() +
+    coord_sf(crs = swift_crs) +
+    geom_sf(data = st_geometry(swift_feature_grid), color = NA,
+            fill = NA, inherit.aes = FALSE) +
+    # fill in grid with feature values
+    geom_sf(data = df, aes(fill = get(paste0(input_var, "_", year))),
+            color = NA, alpha = 0.8, inherit.aes = FALSE) +
+    # add woreda outlines
+    geom_sf(data = swift_woredas, color = "white", fill = NA, inherit.aes = FALSE) +
+    # add cluster points
+    geom_sf(data = cluster_sf, fill = "white", color = "black",
+            pch = 21, alpha = 0.7, inherit.aes = FALSE) +
+    scale_fill_viridis_c(lim = c(fill_min, fill_max)) +
+    labs(title = paste0(input_label, " - ", year)) +
+    theme(legend.position = "bottom",
+          legend.title = element_blank(),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())
+  
+  return(ret)
+}
+
+# map features
+get_swift_maps <- function(df_name, input_var, input_label){
+  
+  df <- get(df_name)
+  
+  # create temporary matrix without sf
+  temp_mat <- df %>%
+    dplyr::select(starts_with(paste0(input_var, "_"))) %>%
+    st_drop_geometry()
+  
+  # set fixed ranges (esp for variables that have multiple years)
+  fill_max <- max(temp_mat)
+  fill_min <- min(temp_mat)
+  
+  # pull all years available for this covariate
+  years <- str_split(names(temp_mat), "_") %>%
+    purrr::map(last) %>% # from each name, pull the last item after "_"
+    unlist()
+  
+  # pull maps for each year
+  ret_list <- lapply(years,
+                     function(x) get_swift_map_year(
+                       df = df,
+                       input_var = input_var,
+                       input_label = input_label,
+                       fill_max = fill_max,
+                       fill_min = fill_min,
+                       year= x
+                      ))
+
+  return(ret_list)
+}
+
+swift_maps_annual <- mapply(get_swift_maps,
+                            df_name = "swift_spatial_features_annual",
+                            input_var = c("tmin",
+                                          "tmax",
+                                          "precip",
+                                          "surface_water",
+                                          "ndvi",
+                                          "evi",
+                                          "avg_rad"),
+                            input_label = c("min temp (C)",
+                                            "max temp (C)",
+                                            "precip (mm)",
+                                            "surface water",
+                                            "ndvi",
+                                            "evi",
+                                            "night lights"))
+
+do.call(grid.arrange, c(swift_maps_annual, ncol = 4))
+```
+
+### Visualize features - static
+
+```{r, echo = FALSE, message = FALSE, fig.width = 9, fig.height = 12}
+swift_maps_static <- mapply(get_swift_maps,
+                            df_name = "swift_spatial_features_static",
+                            input_var = c("elevation",
+                                          "slope",
+                                          "dist_to_road",
+                                          "osm_residential_area",
+                                          "osm_building_count",
+                                          "hdx_building_count",
+                                          "pop",
+                                          "women",
+                                          "under_5",
+                                          "accesshc",
+                                          "accesshcwalk"),
+                            input_label = c("elevation",
+                                            "slope",
+                                            "dist to road (km)",
+                                            "osm res area",
+                                            "osm buildings",
+                                            "hdx buildings",
+                                            "population",
+                                            "% women",
+                                            "% under 5",
+                                            "dist to care (min)",
+                                            "walk to care (min)"))
+
+do.call(grid.arrange, c(swift_maps_static, ncol = 4))
+```
+
+### Session info
+
+```{r}
+sessionInfo()
+```

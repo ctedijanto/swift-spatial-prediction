@@ -1,0 +1,697 @@
+---
+title: "SWIFT spatial: summarize measurements at community-level"
+author: "Christine Tedijanto christine.tedijanto@ucsf.edu"
+date: "Last updated: 09/21/2021, cleaned: 02/28/2022"
+output:
+    html_document:
+      toc: true
+      toc_float: true
+      toc_collapsed: true
+      toc_depth: 3
+      code_folding: hide
+      df_print: paged
+number_sections: false
+---
+
+**Objective:** Clean and prepare RCT measurements for analysis.
+
+```{r setup, message = FALSE}
+library(here)
+source(here("0-config.R"))
+```
+
+### Read in datasets
+
+```{r load_data, message = FALSE}
+## read in clinical and demographic datasets -----
+bind_data <- function(file_prefix){
+  lapply(c("Month0", "Month12", "Month24", "Month36"),
+         function(x) fs::dir_ls(here(data_path, "0-untouched", "from_Isabel", x),
+                                regexp = paste0(file_prefix,"*"))) %>% # pull all files starting with the file_prefix in that folder
+    purrr::map_dfr(read_csv)
+}
+
+ind_dem <- bind_data("individual_demographics")
+ind_pcr <- bind_data("individual_pcr")
+ind_clin <- bind_data("individual_clinical")
+clu_arms <- read_csv(here(data_path, "0-untouched", "from_Isabel", "Month0",
+                          "cluster_treatment_assignment_IJT.csv"))
+
+## read in latest individual pcr/sero and cluster-level data ------
+ind_pcr_updated <- read_csv(here(data_path, "0-untouched", "from_Jeremy", "wuhadata-JK7.csv")) %>%
+  # edit age groups to be same format as existing data
+  mutate(studygroup = case_when(studygroup == "≥10y" ~ "10+y", TRUE ~ studygroup))
+
+clu_prev_updated <- read_csv(here(data_path, "0-untouched", "from_Jeremy", "WUHA-agegroup-village-prevs-12Aug2021.csv")) %>% 
+  # edit age groups to be same format as existing data
+  mutate(studygroup = case_when(studygroup == "≥10y" ~ "10+y", TRUE ~ studygroup))
+```
+
+Identifying variables for each unique observation were defined as follows:
+
+```{r}
+ind_ident <- c("cluster_id", "household_id", "individual_id", "survey")
+```
+
+### Clean trachoma indicator datasets
+
+```{r}
+paste(nrow(ind_pcr_updated) - nrow(distinct(ind_pcr_updated)), "duplicates in updated PCR dataset") # should be 0
+ind_pcr_updated_anypcrind <- ind_pcr_updated %>%
+  filter(!is.na(pcr_ind)) %>%
+  distinct()
+paste(nrow(ind_pcr_updated_anypcrind), "observations with PCR result, after removing duplicates") # 11,189 from jk7
+
+ind_pcr_updated_anyseroind <- ind_pcr_updated %>%
+  filter(!is.na(Pgp3) | !is.na(Ct694)) %>%
+  distinct()
+paste(nrow(ind_pcr_updated_anyseroind), "observations with Pgp3 or Ct694 result, after removing duplicates") # 9,801 from jk7
+```
+
+Combine datasets as needed and standardize variable names and cluster IDs.
+
+```{r}
+## update pcr dataset -----
+ind_pcr_wupdate <- ind_pcr_updated_anypcrind %>%
+  left_join(wuha_cluster_ids %>% dplyr::select(gwukey, cluster_id), by = "gwukey") %>% 
+  dplyr::select(cluster_id,
+                household_id = masterhh,
+                individual_id = masterperson,
+                survey = phase,
+                morbidity_study_group = morbiditystudy,
+                pcr_pool,
+                pcr_individual = pcr_ind,
+                dc_individual = dc_ind,
+                eb_individual = eb,
+                lneb_individual = lneb) %>% 
+  # also add observations from existing dataset with only pooled, no individual result
+  bind_rows(anti_join(ind_pcr %>% dplyr::select(-c(conj_id, eye)),
+                      ind_pcr_updated_anypcrind,
+                      by = c("individual_id" = "masterperson", "survey" = "phase")) %>%
+              filter(is.na(pcr_individual)))
+  
+## update serology dataset -----
+ind_sero_wupdate <- ind_pcr_updated_anyseroind %>%
+  left_join(wuha_cluster_ids %>% dplyr::select(gwukey, cluster_id), by = "gwukey") %>% 
+  dplyr::select(cluster_id,
+                household_id = masterhh,
+                individual_id = masterperson,
+                survey = phase,
+                morbidity_study_group = morbiditystudy,
+                Pgp3, Ct694)
+  
+## update demographic dataset -----
+not_in_dem <- ind_pcr_updated_anypcrind %>% 
+  bind_rows(ind_pcr_updated_anyseroind) %>% 
+  distinct() %>% 
+  anti_join(ind_dem, by = c("masterperson" = "individual_id", "phase" = "survey")) %>% 
+  left_join(wuha_cluster_ids %>% dplyr::select(gwukey, cluster_id), by = "gwukey") %>%
+  dplyr::select(cluster_id,
+                household_id = masterhh,
+                individual_id = masterperson,
+                survey = phase,
+                morbidity_study_group = morbiditystudy) %>%
+  mutate(Population = case_when(
+    grepl("1 Purple", morbidity_study_group) ~ "A",
+    grepl("4 Pink", morbidity_study_group) ~ "B",
+    grepl("5 Green", morbidity_study_group) ~ "C",
+    grepl("2 Purple", morbidity_study_group) ~ "DE",
+    grepl("6 Pink", morbidity_study_group) ~ "DE",
+    grepl("3 Purple", morbidity_study_group) ~ "F"))
+
+ind_dem_wupdate <- ind_dem %>% 
+  bind_rows(not_in_dem) %>% 
+  distinct() # 9 duplicates in ind_dem
+
+paste(nrow(ind_pcr_wupdate) - nrow(ind_pcr), "observations added to PCR data") # +17 - 3 - 3 (mult results for same individual ID and survey, resolved in updated data)
+paste(nrow(ind_sero_wupdate) - nrow(ind_sero %>% filter(!is.na(Pgp3) | !is.na(Ct694))), "observations added to serology data") # +1222 - 4 - 5 (mult results for same individual ID and survey, resolved in updated data)
+paste(nrow(ind_dem_wupdate) - nrow(ind_dem), "observations added to demographic data") # expect 13 additions - 9 duplicates
+```
+
+**Does identifying information differ between the datasets?**
+
+Check identifying information (cluster IDs, household IDs, and morbidity study group) between datasets; update based on latest files (JK7).
+
+```{r}
+study_group_compare <- bind_rows(ind_pcr_updated_anypcrind, ind_pcr_updated_anyseroind) %>% # look at observations in either pcr or sero data
+  distinct() %>% 
+  left_join(wuha_cluster_ids %>% dplyr::select(gwukey, cluster_id_updated = cluster_id),
+            by = "gwukey") %>%
+  filter(!is.na(masterperson)) %>% # for this comparison, exclude individuals with no ID
+  left_join(ind_dem_wupdate,
+            by = c("masterperson" = "individual_id", "phase" = "survey")) %>%
+  # only show observations with different morbidity study group
+  # need to explicitly filter for NA / non-NAs
+  filter(morbiditystudy != morbidity_study_group |
+           (is.na(morbiditystudy) & !is.na(morbidity_study_group)) |
+           (is.na(morbidity_study_group) & !is.na(morbiditystudy)) |
+           household_id != masterhh |
+           (is.na(household_id) & !is.na(masterhh)) |
+           (is.na(masterhh) & !is.na(household_id)) |
+           cluster_id != cluster_id_updated |
+           (is.na(cluster_id) & !is.na(cluster_id_updated)) |
+           (is.na(cluster_id_updated) & !is.na(cluster_id))) %>%
+  dplyr::select(cluster_id, cluster_id_updated,
+                household_id, masterhh,
+                masterperson, phase, morbiditystudy,
+                morbidity_study_group, age_years, pcr_ind) %>% 
+  arrange(masterperson, phase)
+
+# add Population variable to correct later on
+study_group_compare <- study_group_compare %>% 
+  mutate(population = case_when(
+    grepl("1 Purple", morbiditystudy) ~ "A",
+    grepl("4 Pink", morbiditystudy) ~ "B",
+    grepl("5 Green", morbiditystudy) ~ "C",
+    grepl("2 Purple", morbiditystudy) ~ "DE",
+    grepl("6 Pink", morbiditystudy) ~ "DE",
+    grepl("3 Purple", morbiditystudy) ~ "F"))
+
+# correct cluster ID, household ID, and morbidity study group in demographic dataset
+ind_dem_wupdate_2 <- ind_dem_wupdate
+for (curr_row in 1:nrow(study_group_compare)){
+  temp_ind_id <- study_group_compare[curr_row, "masterperson"] %>% as.character()
+  temp_cluster_id <- study_group_compare[curr_row, "cluster_id_updated"] %>% as.character()
+  temp_household_id <- study_group_compare[curr_row, "masterhh"] %>% as.character()
+  temp_phase <- study_group_compare[curr_row, "phase"] %>% as.character()
+  temp_study_group <- study_group_compare[curr_row, "morbiditystudy"] %>% as.character()
+  temp_pop <- study_group_compare[curr_row, "population"] %>% as.character()
+  
+  ind_dem_wupdate_2 <- ind_dem_wupdate_2 %>%
+    # update cluster and household ID for individual across all surveys
+    mutate(cluster_id = case_when(
+      individual_id == temp_ind_id ~ temp_cluster_id,
+      TRUE ~ cluster_id)) %>% 
+    mutate(household_id = case_when(
+      individual_id == temp_ind_id ~ temp_household_id,
+      TRUE ~ household_id)) %>% 
+    # update morbidity study group and population for individual at given survey
+    mutate(morbidity_study_group = case_when(
+      individual_id == temp_ind_id & survey == temp_phase ~ temp_study_group,
+      TRUE ~ morbidity_study_group)) %>% 
+    mutate(Population = case_when(
+      individual_id == temp_ind_id & survey == temp_phase ~ temp_pop,
+      TRUE ~ Population)) %>% 
+    distinct()
+}
+
+# check corrections
+ind_dem_wupdate_2 %>%
+  filter(paste0(individual_id, survey) %in%
+           paste0(study_group_compare$masterperson, study_group_compare$phase)) %>% 
+  arrange(individual_id, survey)
+
+paste0("After updates to demographic data, ", nrow(ind_dem_wupdate)-nrow(ind_dem_wupdate_2), " duplicates were removed.") # 3
+```
+
+* `r nrow(ind_sero_wupdate)` in the serology dataset.
+* `r nrow(ind_pcr_wupdate)` in the PCR dataset
+* `r nrow(ind_dem_wupdate_2)` in the demographic dataset.
+
+### Check for missing identifiers
+
+**1. How many records in each dataset are missing cluster_id, household_id, individual_id OR survey?**
+
+```{r}
+n_dem_inc <- ind_dem_wupdate_2 %>%
+  filter(is.na(cluster_id) | is.na(household_id) | is.na(individual_id) | is.na(survey)) %>%
+  nrow()
+n_pcr_inc <- ind_pcr_wupdate %>%
+  filter(is.na(cluster_id) | is.na(household_id) | is.na(individual_id) | is.na(survey)) %>%
+  nrow()
+n_clin_inc <- ind_clin %>%
+  filter(is.na(cluster_id) | is.na(household_id) | is.na(individual_id) | is.na(survey)) %>%
+  nrow()
+n_sero_inc <- ind_sero_wupdate %>%
+  filter(is.na(cluster_id) | is.na(household_id) | is.na(individual_id) | is.na(survey)) %>%
+  nrow()
+```
+
+-   Demographic dataset: `r n_dem_inc`
+-   PCR dataset: `r n_pcr_inc`
+-   Clinical dataset: `r n_clin_inc`
+-   Serology dataset: `r n_sero_inc`
+
+**2. How many PCR, clinical, or serology observations do not have a match (using cluster_id, household_id, individual_id, and survey) in the individual demographics dataset?**
+
+```{r}
+n_pcr_nomatch <- ind_pcr_wupdate %>% anti_join(ind_dem_wupdate_2, by=ind_ident)
+n_pcr_nomatch
+
+n_clin_nomatch <- ind_clin %>% anti_join(ind_dem_wupdate_2, by=ind_ident)
+n_clin_nomatch
+
+n_sero_nomatch <- ind_sero_wupdate %>% anti_join(ind_dem_wupdate_2, by=ind_ident)
+n_sero_nomatch
+```
+
+-   PCR dataset: `r nrow(n_pcr_nomatch)`
+-   Clinical dataset: `r nrow(n_clin_nomatch)`
+-   Serology dataset: `r nrow(n_sero_nomatch)`
+
+Three observations in the clinical dataset (all updated from the updated dataset) need updated cluster or household ID.
+
+```{r}
+ind_clin_fixclu <- ind_clin %>%
+  mutate(cluster_id = case_when(
+    individual_id == "385F8CC4-BDB2-47EF-96D8-72E9B838DC45" ~ "a0Yo0000006qH5x",
+    TRUE ~ cluster_id)) %>% 
+  mutate(household_id = case_when(
+    individual_id == "20209F6C-F44E-4365-95C6-B99982BDFA75" ~ "H-0016007",
+    individual_id == "12349379-480F-4743-B611-851496AE8DB9" ~ "H-0010046",
+    TRUE ~ household_id))
+```
+
+### Format trachoma indicators
+
+Recode trachoma outcomes from strings to numeric variables.
+
+```{r}
+ind_pcr_num <- ind_pcr_wupdate %>% 
+  mutate_at(vars(pcr_pool, pcr_individual), str_to_title) %>% # make sure all strings have same case pattern
+  mutate(pcr_pool = case_when(
+    pcr_pool == "Negative" ~ 0,
+    pcr_pool == "Equivocal" ~ 0.5,
+    pcr_pool == "Positive" ~ 1
+  )) %>%
+  mutate(pcr_individual = case_when(
+    pcr_individual == "Negative" ~ 0,
+    pcr_individual == "Equivocal" ~ 0.5,
+    pcr_individual == "Positive" ~ 1    
+  ))
+
+ind_clin_num <- ind_clin_fixclu %>% 
+  mutate_at(vars(tf, ti), str_to_title) %>% # make sure all strings have same case pattern
+  mutate(tf = case_when(
+    tf=="No"~0,
+    tf=="Yes"~1
+  )) %>%
+  mutate(ti = case_when(
+    ti=="No"~0,
+    ti=="Yes"~1
+  ))
+```
+
+### Remove outcome duplicates
+
+**Do samples from the same individual have same results?**
+
+Current datasets may have multiple results for a single individual at any survey (e.g. multiple sample IDs). These results are pulled below:
+
+```{r}
+# pcr
+ind_pcr_num %>% filter(!is.na(individual_id)) %>% group_by_at(ind_ident) %>% add_tally() %>% filter(n>1)
+
+# clinical
+ind_clin_num %>% group_by_at(ind_ident) %>% add_tally() %>% filter(n>1)
+
+# serology
+ind_sero_wupdate %>% group_by_at(ind_ident) %>% add_tally() %>% filter(n>1)
+```
+
+For the most part, different samples from the same individual at same survey point have similar results. If results were not the same, the "more positive" result ('Positive' for PCR, 'Yes' for TF/TI, higher antibody response for serology) was selected.
+
+We also recalculate binary markers for serology.
+
+```{r}
+get_uniq_df <- function(num_df, num_vars){
+  suppressWarnings(num_df %>%
+    ungroup() %>% #group_by_at seems to work only if ungroup performed before
+    group_by_at(ind_ident) %>%
+    summarise_at(vars(all_of(num_vars)), max, na.rm=TRUE) %>%  # max returns -Inf if all values NA
+    mutate_at(vars(all_of(num_vars)), funs(ifelse(.=="-Inf", NA, .))) %>% # change -Inf to NA
+    ungroup())
+}
+
+ind_clin_uniq <- get_uniq_df(num_df = ind_clin_num,
+                             num_vars = c("tf", "ti"))
+
+# above function will not work for pcr and sero because of individual IDs that are NA
+# but not needed; any duplicates should have been resolved when updating dataset above
+ind_pcr_uniq <- ind_pcr_num
+ind_sero_uniq <- ind_sero_wupdate %>% 
+  mutate(Pgp3_pos = as.numeric(Pgp3>Pgp3_cutoff),
+         Ct694_pos = as.numeric(Ct694>Ct694_cutoff)) # recalculate binary variables
+```
+
+After creating individual-level datasets, PCR dataset has `r nrow(ind_pcr_uniq)` rows, clinical dataset has `r nrow(ind_clin_uniq)` rows, and serology dataset has `r nrow(ind_sero_uniq)` rows.
+
+### Outcome assignment: clinical
+
+**What combinations of TF/TI are present in the dataset?**
+
+```{r}
+ind_clin_uniq %>% count(tf, ti) %>% arrange(desc(n))
+```
+
+Add variable for overall clinical positivity, which is positive if individual had either TF or TI.
+
+```{r}
+ind_clin_final <- ind_clin_uniq %>% 
+  mutate(clin_pos = case_when(
+    tf == 1 | ti == 1 ~ 1, # if either tf or ti, then clin_pos=1
+    !(is.na(tf) & is.na(ti)) ~ 0 # if not above and either is not NA, then clin_pos=0
+  ))
+
+# check flag assignments
+ind_clin_final %>% count(clin_pos, tf, ti) %>% arrange(clin_pos, tf, ti)
+```
+
+### Outcome assignment: serology
+
+**What combinations of Pgp3/Ct694 positivity are present in the dataset?**
+
+```{r}
+ind_sero_uniq %>% count(Pgp3_pos, Ct694_pos) %>% arrange(desc(n))
+```
+
+Add variable for overall seropositivity, which is positive if individual was seropositive for both Ct694 and Pgp3.
+
+```{r}
+ind_sero_final <- ind_sero_uniq %>% 
+  mutate(sero_pos = ifelse(Ct694_pos == 1 & Pgp3_pos == 1, 1, 0))
+
+# check flag assignments
+ind_sero_final %>% count(sero_pos, Ct694_pos, Pgp3_pos) %>% arrange(sero_pos)
+```
+
+### Outcome assignment: PCR
+
+```{r}
+# ensure that all observations with pcr_individual have a pcr_pool value
+# there are 5 observations (from updated data) that have an individual but not pool result
+ind_pcr_uniq %>% 
+  count(pcr_pool, pcr_individual)
+
+ind_pcr_final <- ind_pcr_uniq
+```
+
+### Create individual-level dataset
+
+**Clean morbidity study group and population markers:**
+
+After cleaning with updated dataset, there are no longer any duplicates in the demographic dataset. 
+
+```{r}
+# remove duplicates (across all columns) from demographic dataset
+paste("observations in demographic dataset:", nrow(ind_dem_wupdate_2)) #93061
+ind_dem_uniq <- distinct(ind_dem_wupdate_2)
+paste("observations in demographic data after de-duping:", nrow(ind_dem_uniq)) #93061
+
+# view counts in each Population and morbidity_study_group bin
+# ind_dem_uniq %>% count(Population, morbidity_study_group) %>% arrange(Population)
+
+# view individuals with more than one Population/morbidity_study_group assignment
+ind_dem_uniq %>%
+  filter(!is.na(individual_id)) %>% 
+  add_count(cluster_id, household_id, individual_id, survey) %>%
+  filter(n>1)
+```
+
+Next, we assign markers for children who were randomly sampled and/or sampled for the longitudinal cohort at each survey based on morbidity study group and population variables.
+
+```{r}
+# add age groups, random_sample marker, and longitudinal_cohort marker
+ind_dem_final <- ind_dem_uniq %>%
+  # study populations
+  mutate_at(vars(Population), funs(ifelse(morbidity_study_group == "5 Green Phase 0", "C", .))) %>% # one observation in '5 Green Phase 0' missing Population variable
+  # add random sample marker
+  mutate(random_sample = case_when(
+    Population == "A" ~ 1,
+    Population == "B" ~ 1,
+    Population == "C" ~ 1,
+    Population == "DE" ~ 1,
+    Population == "F" ~ 0
+  )) %>% 
+  # add longitudinal cohort marker
+  mutate(longitudinal_cohort = case_when(
+    Population == "A" & morbidity_study_group=="1 Purple Phase 0" ~ 1,
+    Population == "A" ~ 0,
+    Population == "B" ~ 0,
+    Population == "C" ~ 0,
+    Population == "DE" & grepl("Pink", morbidity_study_group) ~ 0,
+    Population == "DE" & grepl("Purple", morbidity_study_group) ~ 1,
+    Population == "F" ~ 1
+  )) %>% 
+  # create raw age group - based off of recorded years in dataset
+  mutate(raw_age_group = case_when(
+    age_years<=5 ~"0-5y",
+    age_years>=6 & age_years<=9 ~"6-9y",
+    age_years>9 ~"10+y"
+  )) %>%
+  # create age group based on morbidity study group/pop variables
+  mutate(age_group = case_when(
+    Population == "A" ~ "0-5y",
+    Population == "B" ~ "6-9y",
+    Population == "C" ~ "10+y",
+    Population == "DE" ~ "6-9y",
+    Population == "F" ~ raw_age_group,
+    TRUE ~ raw_age_group
+  )) %>% 
+  # in some cases, longitudinal children 0-5 are selected for the "random sample" again
+  # would like to include their outcomes as longitudinal
+  # correct for this by adding longitudinal flag if a child has ever been longitudinal and also has some value present for morbidity study group
+  group_by(individual_id) %>% 
+  mutate(temp_long_count = sum(longitudinal_cohort, na.rm = TRUE)) %>% 
+  mutate(longitudinal_cohort = case_when(
+    temp_long_count > 0 & !is.na(morbidity_study_group) ~ 1,
+    TRUE ~ longitudinal_cohort
+  )) %>% 
+  ungroup() %>% 
+  dplyr::select(-temp_long_count)
+```
+
+Finally, we conduct a check to see if all labels were correctly cleaned.
+
+```{r}
+paste("observations in final demographic dataset:", nrow(ind_dem_final))
+
+# check that flags were created correctly
+ind_dem_final %>%
+  count(Population, morbidity_study_group, age_group, survey,
+        raw_age_group, random_sample, longitudinal_cohort) %>%
+  arrange(Population, morbidity_study_group, age_group)
+```
+
+When using recorded ages, there's a bit of age misclassification into different morbidity study groups, but not substantial. Recommended to use the morbidity study group and population variables rather than recorded age to track age groups; thus, age groups were used for all downstream analyses unless age in years was required.
+
+**Merge demographic and outcome datasets:**
+
+```{r}
+## separate match for individuals with no ID -----
+ind_all_noID <- ind_dem_final %>% 
+  filter(is.na(individual_id)) %>% # 09.21.2021 - checked and they are unique by cluster_id, survey and morbidity_study_group
+  left_join(ind_pcr_final %>% 
+              filter(is.na(individual_id)) %>% 
+              dplyr::select(-c(household_id, individual_id)),
+            by = c("cluster_id", "survey", "morbidity_study_group")) %>% 
+  left_join(ind_sero_final %>%
+              filter(is.na(individual_id)) %>% 
+              dplyr::select(-c(household_id, individual_id)),
+            by = c("cluster_id", "survey", "morbidity_study_group"))
+
+## combine all
+ind_all <- ind_dem_final %>% 
+  filter(!is.na(individual_id)) %>% 
+  left_join(ind_pcr_final %>% dplyr::select(-morbidity_study_group), by = ind_ident) %>% 
+  left_join(ind_clin_final, by = ind_ident) %>% 
+  left_join(ind_sero_final %>% dplyr::select(-morbidity_study_group), by = ind_ident) %>%
+  bind_rows(ind_all_noID) %>% 
+  left_join(wuha_cluster_ids %>% dplyr::select(cluster_id, arm, cluster_id_public),
+            by = "cluster_id") # add arm and public cluster id
+
+paste("observations in final individual dataset:", nrow(ind_all))
+```
+
+### Miscellaneous data checks
+
+**1. How many clusters are in each treatment assignment arm?**
+
+We expect 20 clusters per arm across all surveys.
+
+```{r}
+clu_prev %>%
+  count(survey, arm) %>%
+  pivot_wider(id_cols = arm,
+              names_from = survey,
+              names_prefix = "m",
+              values_from = n)
+```
+
+**2. Are there any nonsensical values recorded for age?**
+
+`r ind_all %>% filter(is.na(age_months)) %>% nrow()` observations are missing age values. In addition, some observations have nonsensical age values (either less than 0, possibly babies who have not yet been born, or over 100 years old). None of these observations have an assigned morbidity study group. They have been left in the dataset for now. These observations do not contribute any outcome information, only to overall counts of the number of individuals in a cluster.
+
+```{r}
+ind_all %>% 
+  filter(age_months<0 | age_years<0 | age_years>100 | age_months>1200) %>% 
+  nrow()
+
+ind_all %>% 
+  filter(age_months<0 | age_years<0 | age_years>100 | age_months>1200) %>% 
+  filter(!is.na(morbidity_study_group)) %>% 
+  nrow()
+```
+
+**3. Who received an individual / pooled PCR result?**
+
+Explore distribution by age and survey for PCR pooled and individual results. Based on updated cluster dataset, the sources for PCR prevalence for each survey and age group are:
+
+```{r}
+clu_prev_updated %>% distinct(phase, studygroup, from) %>% arrange(phase, studygroup)
+```
+
+Restrict plot to participants under 30 yo because few samples after this age.
+
+```{r, fig.width = 8.5, echo=FALSE}
+ind_all %>%
+  filter(!is.na(pcr_pool)) %>% 
+  count(survey, age_years, !is.na(pcr_individual)) %>%
+  rename(pcr_individual = `!is.na(pcr_individual)`) %>% 
+  ggplot(aes(x = age_years, y = n, fill = pcr_individual)) +
+  geom_bar(position = "stack", stat = "identity", color = "black") +
+  facet_wrap(.~survey) +
+  labs(fill = "Individual PCR result?") +
+  lims(x=c(-1,31)) +
+  theme_minimal() +
+  theme(legend.position="bottom")
+```
+
+Quantitative PCR results are available for most individuals who tested PCR-positive with an individual-level test.
+
+```{r}
+ind_all %>% 
+  count(pcr_individual, is.na(dc_individual), is.na(eb_individual))
+```
+
+### Create cluster-level dataset
+
+Create cluster-level dataset for each trachoma indicator, age group, and survey combination among randomly sampled individuals **only**.
+
+For age group / survey combinations where PCR prevalence was computed using maximum likelihood (based on pooled PCR), only add the number tested. ML values will be added later.
+
+```{r}
+# create cluster-level dataset from individual-level data
+clu_prev_fromind <- clu_arms %>%
+  crossing(expand.grid(survey = survey_list, age_group = age_group_list))
+
+# identify variables to be summarized in cluster-level dataset
+# `var_name` = variable to be counted for positives
+# `n_name` = variable to be counted for denominator of prevalence
+clu_var_df <- data.frame(
+  var_suffix = c("pcr", "sero", "Pgp3", "Ct694", "clin", "tf", "ti"),
+  var_name = c("pcr_individual", "sero_pos", "Pgp3_pos", "Ct694_pos", "clin_pos", "tf", "ti"),
+  n_name = c("pcr_individual", "sero_pos", "sero_pos", "sero_pos", "clin_pos", "clin_pos", "clin_pos"))
+
+for (curr_row in 1:nrow(clu_var_df)){
+  curr_suffix <- clu_var_df[curr_row, "var_suffix"]
+  
+  n_tested_df <- ind_all %>% 
+    filter(random_sample == 1) %>% 
+    filter(!is.na(get(clu_var_df[curr_row, "n_name"]))) %>% 
+    count(cluster_id, age_group, survey, name = "n_tested")
+  
+  n_pos_df <- ind_all %>% 
+    filter(random_sample == 1) %>% 
+    filter(get(clu_var_df[curr_row, "var_name"]) == 1) %>% 
+    count(cluster_id, age_group, survey, name = "n_pos")
+  
+  clu_prev_fromind <- clu_prev_fromind %>% 
+    left_join(n_tested_df, by = c("cluster_id", "survey", "age_group")) %>% 
+    left_join(n_pos_df, by = c("cluster_id", "survey", "age_group")) %>% 
+    mutate(n_pos = replace_na(n_pos, 0)) %>% 
+    mutate(prevalence = n_pos / n_tested) %>%
+    rename_at(vars(n_pos, n_tested, prevalence), ~paste0(., "_", curr_suffix))
+}
+
+# clean up values
+# data may be attributed to "random samples" when not intended
+# for example, some randomly sampled 6-9 yo have serology at 12 and 24 months because they are also in the longitudinal cohort (but should not be represented as "randomly sampled")
+clu_prev_fromind_clean <- clu_prev_fromind
+for(curr_var in c("n_pos_sero", "n_tested_sero", "prevalence_sero",
+                  "n_pos_Pgp3", "n_tested_Pgp3", "prevalence_Pgp3",
+                  "n_pos_Ct694", "n_tested_Ct694", "prevalence_Ct694")){
+  clu_prev_fromind_clean[which(clu_prev_fromind_clean$age_group == "6-9y" &
+                                 clu_prev_fromind_clean$survey %in% c(12,24)),
+                   curr_var] <- NA
+}
+
+# for 6-9yo, PCR also pooled at month 0
+for(curr_var in c("n_pos_pcr", "n_tested_pcr", "prevalence_pcr")){
+  clu_prev_fromind_clean[which(clu_prev_fromind_clean$age_group == "6-9y" &
+                                 clu_prev_fromind_clean$survey %in% c(0)),
+                   curr_var] <- NA
+}
+
+# 10+ yo have no data from months 12 and 24
+clu_prev_fromind_clean <- clu_prev_fromind_clean %>% 
+  filter(!(age_group == "10+y" & survey %in% c(12,24)))
+
+# only clinical and pooled PCR at months 0 and 36, serology at month 36
+for(curr_var in c("n_pos_pcr", "n_tested_pcr", "prevalence_pcr")){
+  clu_prev_fromind_clean[which(clu_prev_fromind_clean$age_group == "10+y" &
+                                 clu_prev_fromind_clean$survey %in% c(0,36)),
+                   curr_var] <- NA
+}
+
+for(curr_var in c("n_pos_sero", "n_tested_sero", "prevalence_sero",
+                  "n_pos_Pgp3", "n_tested_Pgp3", "prevalence_Pgp3",
+                  "n_pos_Ct694", "n_tested_Ct694", "prevalence_Ct694")){
+  clu_prev_fromind_clean[which(clu_prev_fromind_clean$age_group == "10+y" &
+                                 clu_prev_fromind_clean$survey %in% c(0)),
+                   curr_var] <- NA
+}
+
+paste("expected observations in cluster dataset:", 40*4*3 - 2*40)
+paste("observed observations in cluster dataset:", nrow(clu_prev_fromind_clean))
+```
+
+### Add pooled PCR to cluster-level data
+
+```{r}
+clu_prev_updated_temp <- clu_prev_updated %>%
+  left_join(wuha_cluster_ids %>% dplyr::select(-arm), by = "gwukey") %>% 
+  # filter for age groups / surveys where pooled data was used
+  filter(studygroup == "10+y" | (studygroup == "6-9y" & phase == 0)) %>%
+  # rename to match with complete cluster-level dataset
+  dplyr::select(cluster_id, survey = phase, age_group = studygroup,
+                n_tested_pcr = ntested, n_pos_pcr = npos, prevalence_pcr = prev)
+  
+# combine into single dataset
+temp_1 <- clu_prev_fromind_clean %>% 
+  filter(!(age_group == "10+y" | (age_group == "6-9y" & survey == 0)))
+
+temp_2 <- clu_prev_fromind_clean %>% 
+  filter(age_group == "10+y" | (age_group == "6-9y" & survey == 0)) %>% 
+  dplyr::select(-ends_with("pcr"))
+
+clu_prev_fromind_withpool <- temp_2 %>% 
+  left_join(clu_prev_updated_temp, by = c("cluster_id", "survey", "age_group")) %>% 
+  bind_rows(temp_1) %>% 
+  # add PCR source label
+  left_join(clu_prev_updated %>% distinct(phase, studygroup, from),
+            by = c("survey" = "phase", "age_group" = "studygroup")) %>% 
+  rename("source_pcr" = "from") %>%
+  # add public key
+  left_join(wuha_cluster_ids %>% dplyr::select(cluster_id, cluster_id_public), 
+            by = "cluster_id") %>% 
+  arrange(cluster_id_public, age_group, survey)
+```
+
+### Save datasets
+
+```{r}
+# save individual-level dataset
+write_csv(x = ind_all,
+          path = here(data_path, "ind_all.csv"))
+ 
+## save cluster-level dataset
+write_csv(x = clu_prev_fromind_withpool,
+          path = here(data_path, "clu_random_byage.csv"))
+```
+
+### Session info
+
+```{r}
+sessionInfo()
+```

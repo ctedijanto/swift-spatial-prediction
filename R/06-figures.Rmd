@@ -1,0 +1,2003 @@
+---
+title: "SWIFT spatial: figures"
+author: "Christine Tedijanto christine.tedijanto@ucsf.edu"
+date: "Last updated: 09/23/2021, cleaned: 02/28/2022"
+output:
+    html_document:
+      toc: true
+      toc_float: true
+      toc_collapsed: true
+      toc_depth: 3
+      code_folding: hide
+      df_print: paged
+number_sections: false
+---
+
+**Objective:** Output figures for manuscript.
+
+## Main text figures
+
+```{r setup, message = FALSE}
+library(here)
+source(here("0-config.R"))
+
+#load(here(data_path, "swift_spatial_data.Rda"))
+#ind_all <- read_csv(here(data_path, "ind_all.csv"))
+clu_random_modeldata <- readRDS(file = here(data_path, "clu_random_modeldata_public.rds")) %>%
+  rename(cluster_id = cluster_id_public) %>%
+  # also add label for survey month
+  mutate(survey_label = paste0("Month ", survey))
+
+# 0-5 data
+clu_random_0to5 <- clu_random_modeldata %>% 
+  filter(age_group == "0-5y")
+
+clu_random_0to5_sf <- clu_random_0to5 %>% 
+  st_as_sf(coords = c("lon", "lat"), crs = swift_crs)
+
+# read in model results
+sl_summary <- read_rds(file = here(output_path, "sl_summary_public111.rds"))
+sl_results <- read_rds(file = here(output_path, "sl_results_public111.rds"))
+cv_logistic_summary <- read_rds(file = here(output_path, "cv_logistic_summary_public111.rds"))
+cv_logistic_results <- read_rds(file = here(output_path, "cv_logistic_results_public111.rds"))
+
+# variables
+n_permute_variog <- 1000 # set number of variogram null permutations
+n_bs_cor <- 1000 # set number of correlation bootstrap replicates
+save_figs <- FALSE
+file_types <- c("png", "tiff")
+```
+
+### Table 1
+
+```{r, fig.width = 8.5, fig.align = "center"}
+## Table 1: summary of sample sizes
+## prepare descriptive statistics for Table 1, Table S1, Table S2 -----
+desc_stats_df <- lapply(
+  c("pcr", "sero", "clin", "Pgp3", "Ct694", "tf", "ti"),
+  function(x){
+  
+  prevalence_var <- paste0("prevalence_", x)
+  prevalence_lwriqr <- paste0("prevalence_", x, "_lwriqr")
+  prevalence_upriqr <- paste0("prevalence_", x, "_upriqr")
+  
+  clu_random_modeldata %>%
+    group_by(survey, age_group) %>% 
+    summarise(!!prevalence_lwriqr := quantile(get(prevalence_var), probs = 0.25, na.rm = TRUE),
+              !!prevalence_upriqr := quantile(get(prevalence_var), probs = 0.75, na.rm = TRUE),
+              !!prevalence_var := median(get(prevalence_var), na.rm = TRUE),
+              !!paste0("n_tested_", x) := sum(get(paste0("n_tested_", x))),
+              .groups = "drop") %>% 
+    # format with exactly one digit after decimal
+    mutate_at(vars(starts_with("prevalence_")), list(~ sprintf(. * 100, fmt = '%#.1f'))) %>% 
+    mutate(!!paste0("summary_", x) := paste0(get(prevalence_var), " (", get(prevalence_lwriqr), "-", get(prevalence_upriqr), ")")) %>% 
+    dplyr::select(-starts_with("prevalence_"))
+  }) %>% purrr::reduce(left_join, by = c("survey", "age_group")) %>% 
+  # add overall population count
+  # removed for public code as individual-level data not available
+  # left_join(ind_all %>%
+  #             filter(random_sample == 1,
+  #                    (!is.na(clin_pos) | !is.na(sero_pos) | !is.na(pcr_individual) | !is.na(pcr_pool))) %>%
+  #             group_by(survey, age_group) %>%
+  #             count(name = "n_pop"),
+  #           by = c("survey", "age_group")) %>% 
+  # modify age group labels for table
+  mutate(age_group_label = case_when(
+    age_group == "0-5y" ~ "0to5",
+    age_group == "6-9y" ~ "6to9",
+    age_group == "10+y" ~ "over9"))
+
+## prep df for Table 1 -----
+table1_df <- desc_stats_df %>% 
+  # drop any individuals not in 0-9yo
+  filter(age_group %in% c("0-5y", "6-9y")) %>% 
+  # select final columns for table
+  #dplyr::select(survey, age_group_label, n_pop, summary_pcr, summary_clin, summary_sero) %>% 
+  dplyr::select(survey, age_group_label, summary_pcr, summary_clin, summary_sero) %>% 
+  pivot_wider(names_from = age_group_label,
+              #values_from = c("n_pop", "summary_pcr", "summary_clin", "summary_sero"))
+              values_from = c("summary_pcr", "summary_clin", "summary_sero"))
+
+## create Table 1 with gt -----
+table1 <- table1_df %>%
+  gt() %>%
+  # format n with commas
+  # fmt_number(
+  #   columns = starts_with("n_pop"),
+  #   decimals = 0
+  # ) %>%
+  tab_spanner(
+    label = "Median prevalence (%), 0-5 year olds (IQR)",
+    #columns = vars(n_pop_0to5, summary_pcr_0to5, summary_clin_0to5, summary_sero_0to5)
+    columns = vars(summary_pcr_0to5, summary_clin_0to5, summary_sero_0to5)
+  ) %>%
+  tab_spanner(
+    label = "Median prevalence (%), 6-9 year olds (IQR)",
+    #columns = vars(n_pop_6to9, summary_pcr_6to9, summary_clin_6to9, summary_sero_6to9)
+    columns = vars(summary_pcr_6to9, summary_clin_6to9, summary_sero_6to9)
+  ) %>% 
+  cols_label(
+    survey = "Month",
+    #n_pop_0to5 = "n",
+    #n_pop_6to9 = "n",
+    summary_pcr_0to5 = "PCR",
+    summary_pcr_6to9 = "PCR",
+    summary_clin_0to5 = "Clinical TF/TI",
+    summary_clin_6to9 = "Clinical TF/TI",
+    summary_sero_0to5 = "Serology",
+    summary_sero_6to9 = "Serology"
+  ) %>%
+  # table styling
+  fmt_missing(
+    columns = everything(),
+    missing_text = "-",
+  ) %>% 
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>% 
+  tab_style(
+    style = cell_text(size = "small"),
+    locations = cells_body(
+      columns = everything()
+    )
+  ) %>% 
+  # add footnotes
+  # tab_footnote(
+  #   footnote = "Number of children surveyed",
+  #   locations = cells_column_labels(
+  #     columns = starts_with("n_"))
+  # ) %>% 
+  tab_footnote(
+    footnote = "Polymerase chain reaction",
+    locations = cells_column_labels(
+      columns = starts_with("summary_pcr_"))
+  ) %>% 
+  tab_footnote(
+    footnote = "Trachomatous inflammation - follicular / trachomatous inflammation - intense",
+    locations = cells_column_labels(
+      columns = starts_with("summary_clin_"))
+  ) %>% 
+  tab_footnote(
+    footnote = "Serology was not measured for a random sample of 6–9-year-olds at months 12 and 24",
+    locations = cells_column_labels(
+      columns = starts_with("summary_sero_"))
+  ) %>% 
+  tab_options(
+    footnotes.font.size = "x-small"
+  )
+
+table1
+
+if(save_figs){
+  gtsave(table1,
+         filename = "table1_summary_stats.png",
+         path = here(output_path))
+}
+```
+
+### Figure 1
+
+```{r, fig.width = 7, fig.height = 7, message = FALSE, eval = FALSE}
+# will not run properly without correct spatial information
+# read in ethiopia shape files
+eth_shp_files <- st_read(here(data_path, "hdx", "eth_adm_csa_bofed_20201028_shp", "eth_admbnda_adm3_csa_bofed_20201027.shp"))
+
+## Inset: map of Amhara in Ethiopia / Eastern Africa context -----
+
+# pull africa country outlines
+africa <- rnaturalearth::ne_countries(continent = "africa",
+                                      returnclass = "sf")
+
+# create bounding box around ethiopia
+eth_bbox <- st_bbox(africa %>% filter(admin == "Ethiopia"))
+eth_bbox <- eth_bbox + c(-0.1, -0.15, 0.1, 0.1)
+names(eth_bbox) <- c("left", "bottom", "right", "top")
+eth_bbox
+eth_bbox_sfc <- eth_bbox %>% st_bbox(crs = swift_crs) %>% st_as_sfc() # save version as sf polygon
+eth_shp <- africa %>% filter(admin == "Ethiopia")
+
+# create smoothed amhara outline
+amhara_shp <- eth_shp_files %>%
+  filter(ADM1_EN == "Amhara") %>%
+  pull(geometry) %>% 
+  st_union() %>% 
+  st_cast("POLYGON") %>% 
+  head(1) %>% # select largest polygon
+  smoothr::fill_holes(threshold = units::set_units(6000, km^2)) # remove outline of Lake Tana
+
+# plot map
+fig1_inset <- ggplot() +
+  #ggmap::get_stamenmap(eth_bbox, zoom = 7, maptype = "terrain") %>% ggmap() + # to add stamenmap background
+  #geom_sf(data = st_difference(eth_bbox_sfc, amhara_shp), fill = "grey", color = NA, alpha = 0.7, inherit.aes = FALSE) + # gray out non-ethiopia areas
+  #geom_sf(data = africa %>% filter(admin == "Ethiopia"), color = "darkgrey", fill = NA, lwd = 0.8) + # ethiopia country outline # 20210420 map
+  geom_sf(data = st_crop(africa, eth_bbox), color = "grey50", fill = NA, lwd = 0.8) + # ethiopia country outline
+  geom_sf(data = amhara_shp, color = "gray", fill = "gray", lwd = 0.6, alpha = 0.3) + # white out non-amhara area
+  # bounding box around swift area
+  geom_sf(data = swift_bbox %>% st_bbox(crs = swift_crs) %>% st_as_sfc(), color = "black", fill = NA, lwd = 1) +
+  geom_sf_text(data = africa %>% filter(admin == "Ethiopia"), aes(label = admin), alpha = 0.6, size = 4,
+                nudge_x = 1, nudge_y = -1.2, color = "black") + # add ethiopia label
+  coord_sf(crs = swift_crs, xlim = c(eth_bbox["left"], eth_bbox["right"]), ylim = c(eth_bbox["bottom"], eth_bbox["top"]), expand = FALSE) + # note: this code has to go AFTER geom_sf in order for expand = FALSE to work
+  theme_bw() +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.background = element_blank(),
+        panel.border = element_rect(size = 1.2))
+
+## Main map: study site with woreda outlines -----
+swift_bbox_big <- swift_bbox + c(0,0,0.15,0) # make bbox larger to accommodate inset at top right
+swift_bbox_big_sfc <- swift_bbox_big %>% st_bbox(crs = swift_crs) %>% st_as_sfc()
+
+fig1_main <- ggmap::get_stamenmap(swift_bbox_big, maptype = "terrain") %>% 
+    ggmap() +
+    coord_sf(crs = swift_crs) +
+    # white out non-swift areas
+    geom_sf(data = st_difference(swift_bbox_big_sfc, swift_woredas %>% pull(geometry) %>% st_union()),
+            fill = "white", color = NA, alpha = 0.5, inherit.aes = FALSE) + 
+    # add woreda outlines
+    geom_sf(data = swift_woredas,
+            color = "black",
+            size = 0.7,
+            fill = NA,
+            inherit.aes = FALSE) +
+    # add cluster points with prevalence
+    geom_sf(data = cluster_sf, # original lat/lon
+            color = "black",
+            fill = "black",
+            alpha = 0.5,
+            pch = 21,
+            stroke = 1, # thickness of pch outline
+            size = 2,
+            inherit.aes = FALSE) +
+    # add woreda name labels
+    # respelled to match WUHA protocol paper
+    geom_sf_label(data = swift_woredas %>%
+                    mutate(ADM3_label = case_when(
+                      ADM3_EN == "Gaz Gibla" ~ "Gazgibella",
+                      ADM3_EN == "Sekota" ~ "Sekota Zuria",
+                      ADM3_EN == "Sekota town" ~ "Sekota Ketema"
+                    )),
+               aes(label = ADM3_label),
+               alpha = 0.6, 
+               size = 4.1,
+               inherit.aes = FALSE) +
+    # add map scale
+    ggsn::scalebar(cluster_sf,
+                   dist = 5,
+                   dist_unit = "km",
+                   transform = TRUE,
+                   model = "WGS84",
+                   location = "bottomleft",
+                   st.size = 3) +
+    theme_bw() +
+    # wrap legend text for fill
+    theme(axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.line = element_blank(),
+          panel.border = element_rect(size = 1.2))
+
+fig1 <- ggdraw(fig1_main) + draw_plot(fig1_inset, x = 0.54, y = 0.68, width = 0.33, height = 0.33)
+fig1
+
+if(save_figs){
+  for (ft in file_types){
+    ggsave(filename = here(output_path, paste0("fig1_study_map.", ft)),
+           device = ft,
+           plot = fig1,
+           width = 7, height = 7)
+  }
+}
+```
+
+### Figure 2
+
+```{r, message = FALSE, eval = FALSE}
+## prepare for maps -----
+# set grid size in degrees
+# unit depends on coordinate system, in this case WGS 84
+grid_size <- 33.19/3600 # 33.19 arc-seconds, ~1km at 12.51N latitude
+
+# draw convex hull around clusters
+swift_convex_hull <- cluster_sf %>% st_union() %>% st_convex_hull()
+swift_hull_grid <- st_make_grid(swift_convex_hull,
+                                cellsize = c(grid_size, grid_size),
+                                crs = swift_crs,
+                                what = "polygons",
+                                square = FALSE)
+
+## Panel A: Prevalence maps ----
+# `get_grid_preds` function: get predictions using simple model (mean and Matern) for given variable
+# input_grid: sf grid to get values over
+# input_df: dataframe to use to build model
+# input_var: outcome variable for model (e.g. "pcr")
+# input_survey: survey month to build model for (e.g. 0, 12, 24 or 36)
+get_grid_preds <- function(input_grid, input_df, input_var, input_survey){
+  
+  pos_var <- paste0("n_pos_", input_var)
+  tested_var <- paste0("n_tested_", input_var)
+  temp_form <- paste0("cbind(", pos_var, ",", tested_var, "-", pos_var, ") ~ lat + lon + Matern(1|lat + lon)")
+    
+  temp_mod <- spaMM::fitme(as.formula(temp_form),
+                           data = input_df %>% filter(survey == input_survey),
+                           family = binomial(link = "logit"))
+  
+  temp_preds <- predict(object = temp_mod,
+                        type = "response",
+                        newdata = st_centroid(get(input_grid)) %>%
+                          st_as_sf(crs = swift_crs) %>% 
+                          mutate(lat = sf::st_coordinates(x)[,2],
+                                 lon = sf::st_coordinates(x)[,1]) %>%
+                          st_drop_geometry())
+  
+  ret <- get(input_grid) %>% 
+    as.data.frame %>% 
+    st_as_sf(crs = swift_crs) %>% 
+    mutate(trach_ind = paste0("prevalence_", input_var),
+           survey = input_survey,
+           pred_prevalence = temp_preds)
+  
+  return(ret)
+}
+
+# get predictions over all survey_list for PCR
+# will throw warning about centroids, but seems to work okay (maybe bc this area is close to equator?)
+grid_preds_0to5_pcr <- mapply(get_grid_preds,
+                              input_survey = survey_list,
+                              MoreArgs = list(input_df = clu_random_modeldata %>% filter(age_group == "0-5y"),
+                                              input_var = "pcr",
+                                              input_grid = "swift_hull_grid"),
+                                SIMPLIFY = FALSE) %>% 
+  bind_rows() %>%
+  # change pred_prevalence to numeric
+  mutate(pred_prevalence = as.numeric(as.character(pred_prevalence))) %>% 
+  mutate(survey_label = paste0("Month ", survey)) %>%
+  # st_make_grid uses rectangular bounding box, filter for grid cells that overlap convex hull
+  mutate(in_hull = st_intersects(., swift_convex_hull, sparse = FALSE)) %>%
+  filter(in_hull == TRUE) %>% 
+  dplyr::select(-in_hull)
+  
+# plot cluster-level maps
+# `get_grid_preds_map` 
+get_grid_preds_map <- function(input_preds, input_var, fill_label){
+  
+  # for max fill, choose lowest value larger than max pred that is divisible by 0.2
+  obs_vals <- clu_random_0to5 %>% pull(get(paste0("prevalence_", input_var)))
+  pred_vals <- input_preds$pred_prevalence
+  
+  # set max for color gradient bar
+  temp_fill_max <- ceiling(max(c(obs_vals, pred_vals))*10)
+  if((temp_fill_max %% 2) != 0){temp_fill_max <- temp_fill_max + 1}
+  temp_fill_max <- temp_fill_max/10
+  
+  ret <- ggmap::get_map(swift_bbox, source = "stamen") %>% 
+    ggmap() +
+    coord_sf(crs = swift_crs) +
+    ## add woreda outlines
+    geom_sf(data = swift_woredas,
+            color = "white",
+            fill = NA,
+            inherit.aes = FALSE) +
+    ## add smoothed predictions
+    geom_sf(data = input_preds,
+            aes(fill = pred_prevalence),
+            color = NA,
+            alpha = 0.9,
+            inherit.aes = FALSE) +
+    ## add cluster points with prevalence
+    geom_sf(data = clu_random_modeldata %>% # use private data with real lat/lon
+              filter(age_group == "0-5y") %>%
+              st_as_sf(coords = c("lon", "lat"), crs = swift_crs),
+            aes(fill = get(paste0("prevalence_", input_var))),
+            color = "black",
+            pch = 21,
+            inherit.aes = FALSE) +
+    ## add map scale
+    ggsn::scalebar(input_preds,
+                   dist = 5,
+                   dist_unit = "km",
+                   transform = TRUE,
+                   model = "WGS84",
+                   location = "bottomleft",
+                   st.size = 2,
+                   facet.var = "survey_label") +
+    ## formatting
+    scale_fill_gradientn(colors = viridis::viridis_pal()(9),
+                         limits = c(0, temp_fill_max),
+                         labels = scales::percent,
+                         guide = guide_colorbar(frame.colour = "black",
+                                                frame.linewidth = 1.5,
+                                                ticks.colour = "black",
+                                                ticks.linewidth = 1.5)) +
+    facet_grid(cols = vars(survey_label)) +
+    theme_classic() +
+    # wrap legend text for fill
+    labs(fill = str_wrap(fill_label, width = 10)) +
+    theme(legend.position = "right",
+          legend.title = element_text(size = 10),
+          legend.text = element_text(size = 8),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.line = element_blank(),
+          plot.margin = unit(c(0,0,0,3), 'lines'))
+
+  return(ret)
+}
+
+fig2A <- get_grid_preds_map(input_preds = grid_preds_0to5_pcr,
+                            input_var = "pcr",
+                            fill_label = "PCR prevalence")
+```
+
+```{r fig.width = 8.5, fig.height = 4}
+## Panel B: variograms for months 0-36 with MC envelopes and models -----
+
+# create SpatialPointsDataFrame for clusters to allow for variogram building
+clu_spatial <- clu_random_0to5_sf %>%
+  filter(survey == 0) %>% 
+  st_as_sf(crs = swift_crs) %>%
+  as("Spatial")
+
+# rule of thumb: limit max distance in variogram to half of maximum interpoint distance
+clu_distances <- sapply(1:nrow(clu_spatial), function(x) geosphere::distGeo(p1 = clu_spatial, p2 = clu_spatial[x,])) # estimate distance from each point to all other points
+half_max_dist <- max(clu_distances) / 2 / 1000 # divide by 1000 to turn meters to km (33.26 km)
+  
+## `get_variograms`: function to estimate variograms, fitted models, and monte carlo envelopes
+# input_var: trachoma indicator to create variograms for (e.g. "pcr"); for standardization with other functions
+# input_df: input dataframe
+# input_models: list of models to fit to variogram
+# n_permute: number of permutations for monte carlo envelope
+# iterate through survey_list
+# see Diggle and Ribiero 2006: 2.3.2 Spatial exploratory analysis
+variog_colors <- c(#"Sph" = RColorBrewer::brewer.pal(n = 8, name = "Dark2")[7],
+                   "Exp" = RColorBrewer::brewer.pal(n = 8, name = "Dark2")[4],
+                   "Mat" = RColorBrewer::brewer.pal(n = 8, name = "Dark2")[5])
+
+variogram_inside_loop <- function(s, input_var, input_df, input_models, n_permute, residualize){
+    # create temporary spatial dataframe for survey-specific variogram
+    temp_outcome <- paste0("prevalence_", input_var)
+    temp_spatial <- input_df %>%
+      filter(survey == s) %>% 
+      st_as_sf(coords = c("lon", "lat"), remove = FALSE, crs = swift_crs) %>%
+      as("Spatial")
+    
+    ## get variogram model fits
+    # initialize containers to save variogram results
+    variog_lines <- data.frame(model = character(), dist = numeric(), gamma = numeric())
+    variog_stats <- data.frame(model = character(), sserr = numeric(), effrange = numeric())
+    
+    # due to stationarity assumptions, have to residualize trends prior to variograms and moran's I
+    if(residualize){
+      temp_spatial$trend_resid <- resid(lm(get(temp_outcome)~lat+lon, data = temp_spatial))
+      temp_outcome <- "trend_resid"
+    }
+    
+    for(temp_mod in input_models){
+      # note that automap creates fewer, but larger bins than gstat (gstat results were much more unstable)
+      # note: `dist` in results is the average distance of all pairs in that bin (see `gstat` documentation)
+      temp_fit <- automap::autofitVariogram(formula = get(temp_outcome)~1,
+                                            input_data = temp_spatial,
+                                            model = temp_mod, # ability to fit multiple models at once is deprecated?
+                                            kappa = c(1.5, 2.5, 3.5, 5, 10, 15, 20), # only used for Matern
+                                            # miscFitOptions = list(merge.small.bins = TRUE) # alternative way to create larger bins
+                                            miscFitOptions = list(min.np.bin = 10)) # automap has this feature, gstat does not
+      temp_var_model <- temp_fit$var_model
+      
+      temp_line <- gstat::variogramLine(temp_var_model, maxdist = half_max_dist)
+      variog_lines <- variog_lines %>% bind_rows(temp_line %>% mutate(model = temp_mod))
+      
+      temp_effrange_y <- temp_var_model[which(temp_var_model$model == temp_mod), "psill"]*0.95 + temp_var_model[which(temp_var_model$model == "Nug"), "psill"]
+      temp_effrange <- temp_line$dist[min(which(temp_line$gamma > temp_effrange_y))] # estimate effective range as 95% of sill + nugget
+    
+      variog_stats <- variog_stats %>% bind_rows(data.frame(model = temp_mod, sserr = temp_fit$sserr, effrange = temp_effrange))
+    }
+
+    ## estimate Monte Carlo envelope
+    # get empirical variogram for observed data
+    permute_results <- automap::autofitVariogram(formula = get(temp_outcome)~1,
+                                                 input_data = temp_spatial,
+                                                 miscFitOptions = list(min.np.bin = 10))$exp_var %>%
+      dplyr::select(np, dist, gamma) %>% 
+      as.data.frame()
+    
+    # get moran's I
+    temp_outcome_morani <- paste0("prevalence_", input_var)
+    temp_distances <- sapply(1:nrow(temp_spatial), function(x) geosphere::distGeo(p1 = temp_spatial, p2 = temp_spatial[x,]))
+    temp_dist_wts <- 1/temp_distances
+    diag(temp_dist_wts) <- 0
+    temp_ape_morani <- ape::Moran.I(temp_spatial@data[,temp_outcome_morani], temp_dist_wts)
+    #print(temp_ape_morani)
+    permute_results_morani <- c()
+    
+    # conduct permutations
+    for(i in 1:n_permute){
+      
+      # choose order of 40 clusters
+      temp_permute <- sample(1:40, size = 40, replace = FALSE)
+      
+      temp_permute_spatial <- temp_spatial@data %>% 
+        dplyr::select(cluster_id, eval(temp_outcome), eval(temp_outcome_morani)) %>% 
+        # rearrange order of PCR values
+        mutate(temp_permute = temp_permute) %>% 
+        arrange(temp_permute) %>% 
+        # tack on spatial data in original order
+        bind_cols(input_df %>% filter(survey == s) %>% dplyr::select(cluster_id_sf = cluster_id, lat, lon)) %>% 
+        # make into Spatial data
+        st_as_sf(coords = c("lon", "lat"), crs = swift_crs, remove = FALSE) %>%
+        as("Spatial")
+      
+      # fit variogram
+      temp_variog <- automap::autofitVariogram(formula = get(temp_outcome)~1,
+                                               input_data = temp_permute_spatial,
+                                               miscFitOptions = list(min.np.bin = 10))
+      
+      permute_results <- permute_results %>% 
+        left_join(temp_variog$exp_var %>%
+                    dplyr::select(np, dist, gamma) %>% 
+                    rename(!!paste0("gamma_", i) := gamma),
+                  by = c("np", "dist"))
+      
+      permute_results_morani[i] <- ape::Moran.I(temp_permute_spatial@data[,temp_outcome_morani], temp_dist_wts)$observed
+    }
+    # get upper and lower bounds for envelope
+    permute_bounds <- apply(permute_results %>% dplyr::select(starts_with("gamma")), 1, quantile, c(0.025, 0.975)) %>%
+      t() %>% 
+      as.data.frame() %>% 
+      rename(q0.025 = "2.5%", q0.975 = "97.5%") %>% 
+      mutate(fill_flag = "1")
+    
+    permute_results <- permute_results %>% bind_cols(permute_bounds)
+    
+    ## moran i inset
+    permute_bounds_morani <- quantile(c(permute_results_morani, temp_ape_morani$observed), c(0.025, 0.975))
+    morani_p <- round((sum(permute_results_morani>=temp_ape_morani$observed)+1)/(n_permute + 1), digits = 2)
+    temp_morani_fig <- ggplot(data = data.frame(morani_obs = c(permute_results_morani, temp_ape_morani$observed))) +
+      geom_histogram(aes(x = morani_obs), bins = 30, color = "white", fill = "grey85") +
+      geom_vline(aes(xintercept = temp_ape_morani$observed), color = "red") +
+      coord_cartesian(xlim = c(-0.2, 0.2), ylim = c(0, (n_permute + 1)/5)) +
+      labs(x = "Moran's I", y = "Count") +
+      theme_classic() +
+      theme(title = element_text(size = 9))
+      
+    ## create variogram plot of points and each model fit
+    temp_plot <- ggplot() +
+      geom_ribbon(data = permute_results, aes(x = dist, ymin = q0.025, ymax = q0.975, fill = fill_flag), alpha = 0.3) +
+      geom_point(data = permute_results, aes(x = dist, y = gamma)) + # empirical variog, does not depend on model
+      geom_text(data = permute_results, aes(x = dist, y = 0.06*0.95, label = np), size = 2) + # empirical variog, does not depend on model
+      geom_line(data = variog_lines, aes(x = dist, y = gamma, color = model)) +
+      geom_vline(data = variog_stats, aes(xintercept = effrange, color = model), lty = "dashed", show.legend = FALSE) +
+      scale_color_manual(values = variog_colors, labels = c("Exp" = "Exponential", "Mat" = "Matern")) +
+      scale_fill_manual(values = c("1" = "grey"), labels = c("1" = "Monte Carlo\nenvelope")) +
+      labs(#title = paste("variogram for", curr_ind, "- survey month", s),
+           #subtitle = "labels above each point are bin sizes",
+           x = "Distance (km)", y = "Semivariance",
+           color = "Fitted model",
+           fill = "") +
+      coord_cartesian(xlim = c(0, max(permute_results$dist)), y = c(0, 0.062)) +
+      theme_classic() +
+      theme(title = element_text(size = 9),
+            panel.grid.major = element_line(color = "grey95"),
+            legend.position = "none") +
+      guides(fill  = guide_legend(order = 2),
+             color = guide_legend(order = 1))
+    
+    if(s != 0){
+      temp_plot <- temp_plot +
+        theme(axis.title.y = element_blank(),
+              axis.text.y = element_blank(),
+              axis.ticks.y = element_blank(),
+              axis.line.y = element_blank())
+      
+      temp_morani_fig <- temp_morani_fig +
+        theme(axis.title.y = element_blank(),
+              axis.text.y = element_blank(),
+              axis.ticks.y = element_blank(),
+              axis.line.y = element_blank())
+    }
+    
+    if(s == 0){
+      temp_plot <- temp_plot +
+        geom_text(aes(x = 8, y = 0.062), label = "Bin sample sizes", size = 2.8) +
+        theme(plot.margin = unit(c(0.3,0,0.3,1), 'lines'))
+      
+      temp_morani_fig <- temp_morani_fig +
+        annotate("text", x = -0.14, y = (n_permute + 1)/5*0.95, size = 3,
+                 label = paste0("p = ", format(morani_p, nsmall = 2))) +
+        theme(plot.margin = unit(c(0,0,0.4,1), 'lines'))
+    }
+    
+    if(s == 36){
+      temp_plot <- temp_plot + 
+        theme(legend.position = "right",
+              legend.title = element_text(size = 9),
+              legend.text = element_text(size = 8))
+      
+      temp_morani_fig <- temp_morani_fig +
+        annotate("text", x = -0.14, y = (n_permute + 1)/5*0.97, size = 3,
+                 label = paste0("p = ", format(morani_p, nsmall = 2))) +
+        theme(plot.margin = unit(c(0,5.5,0.4,0), 'lines'))
+    }
+    
+    if(s %ni% c(0,36)){
+      temp_morani_fig <- temp_morani_fig +
+        annotate("text", x = -0.14, y = (n_permute + 1)/5, size = 3,
+                 label = paste0("p = ", format(morani_p, nsmall = 2)))
+    }
+    
+    return(list(temp_plot, temp_morani_fig))
+}
+
+get_variograms <- function(input_var, input_df, input_models, n_permute, residualize){
+  
+  variog_plot_list <- list() # initialize container to save plots
+  morani_plot_list <- list()
+  
+  set.seed(111)
+  applied_plots <- lapply(survey_list,
+         function(x){
+           variogram_inside_loop(
+             s = x,
+             input_var = input_var,
+             input_df = input_df,
+             input_models = input_models,
+             n_permute = n_permute,
+             residualize = residualize
+           )})
+  
+  variog_plot_list <- applied_plots %>% purrr::map(1)
+  morani_plot_list <- applied_plots %>% purrr::map(2)
+  
+  variog_plot <- arrangeGrob(grobs = variog_plot_list, nrow = 1, widths = c(1.2,1,1,1.6))
+  morani_plot <- arrangeGrob(grobs = morani_plot_list, nrow = 1, widths = c(1.2,1,1,1.6))
+  return(list(variog_plot, morani_plot))
+}
+
+# ~10 minutes with 1000 permutations
+fig2BC <- get_variograms(input_var = "pcr",
+                        input_df = clu_random_0to5,
+                        input_models = c("Exp", "Mat"),
+                        n_permute = n_permute_variog,
+                        residualize = TRUE)
+
+## Put panels together
+fig2 <- plot_grid(#plotlist = list(fig2A, fig2BC[[1]], fig2BC[[2]]),
+                  plotlist = list(fig2BC[[1]], fig2BC[[2]]),
+                  vjust = c(1.5, 1.5),
+                  hjust = c(-0.5, -0.5),
+                  ncol = 1,
+                  labels = "AUTO",
+                  axis = "r",
+                  rel_heights = c(1,1),
+                  label_size = 14)
+
+fig2
+
+if(save_figs){
+  for (ft in file_types){
+    ggsave(filename = here(output_path, paste0("fig2_pcr_map_variog.", ft)),
+           device = ft,
+           plot = fig2,
+           width = 9, height = 4, units = "in")
+  }
+}
+```
+
+### Figure 3
+
+```{r, fig.width = 8.5}
+## calculate correlations and bootstrap CIs -----
+cor_method <- "spearman"
+
+cor_ci_df <- expand.grid(curr_ind = c(trach_ind, "prevalence_Pgp3", "prevalence_Ct694", "prevalence_ti", "prevalence_tf"),
+                         curr_survey = survey_list,
+                         lag = survey_list) %>%
+  crossing(age_group = c("0-5y", "6-9y")) %>% 
+  # only keep lags for survey 36
+  filter(curr_survey == 36 | lag == 0) %>% 
+  filter(!(age_group == "6-9y" & (curr_survey-lag) %in% c(12,24) & curr_ind %in% c("prevalence_Pgp3", "prevalence_Ct694", "prevalence_sero"))) %>% 
+  # initialize columns for correlation & ci values
+  mutate(cor_est = NA, cor_lwrci = NA, cor_uprci = NA)
+
+# get correlation for bootstrapped sample
+get_bs_cor <- function(temp_xy){
+  temp_sample <- temp_xy[sample(1:nrow(temp_xy), size = nrow(temp_xy), replace = TRUE), ]
+  temp_bs_cor <- cor(temp_sample$y, temp_sample$x, method = cor_method, use = "complete.obs") # calculate correlation on complete cases
+  return(temp_bs_cor)
+}
+
+for(i in 1:nrow(cor_ci_df)){
+  
+  # pull desired x values based on variable, survey and lag
+  temp_x <- clu_random_modeldata %>% 
+    filter(age_group == cor_ci_df$age_group[i]) %>% 
+    filter(survey == (cor_ci_df$curr_survey[i] - cor_ci_df$lag[i])) %>% 
+    dplyr::select(cluster_id, x = eval(cor_ci_df$curr_ind[i]))
+  
+  # pull desired y value based on survey
+  # pcr is the "outcome" of interest in all cases
+  temp_y <- clu_random_modeldata %>% 
+    filter(age_group == cor_ci_df$age_group[i]) %>% 
+    filter(survey == cor_ci_df$curr_survey[i]) %>% 
+    dplyr::select(cluster_id, y = prevalence_pcr)
+               
+  # merge x and y values into one dataset               
+  temp_xy <- left_join(temp_x, temp_y, by = "cluster_id")
+  
+  set.seed(111)
+  temp_bs_cor <- sapply(1:n_bs_cor, function(x) get_bs_cor(temp_xy = temp_xy))
+  
+  # calculate correlation and bounds
+  temp_cor <- cor(temp_xy$y, temp_xy$x, method = cor_method, use = "complete.obs")
+  cor_ci_df$cor_est[i] <- temp_cor
+  cor_ci_df$cor_lwrci[i] <- quantile(c(temp_bs_cor), prob = 0.025)
+  cor_ci_df$cor_uprci[i] <- quantile(c(temp_bs_cor), prob = 0.975)
+     
+}
+
+## figure styling ------
+# set colors for age groups
+age_group_colors <- c("0-5y" = RColorBrewer::brewer.pal(n = 8, name = "Dark2")[1],
+                      "6-9y" = RColorBrewer::brewer.pal(n = 8, name = "Dark2")[3])
+
+fig3AB_legend_df <- data.frame(survey_label = c("Study month 36"), age_group = c("0-5y", "6-9y")) %>%
+  mutate(survey_label = factor(survey_label, levels = c("Study month 0", "Study month 36"))) %>%
+  mutate(age_group = factor(age_group, levels = c("0-5y", "6-9y")))
+
+# common styling for panels A and B
+fig3AB_theme <- list(facet_wrap(.~survey_label, nrow = 1),
+  scale_x_continuous(breaks = seq(0, 1, by = 0.25), labels = sprintf(100*seq(0,1,by=0.25), fmt = "%1.0f")),
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25), labels = sprintf( 100*seq(0,1,by=0.25), fmt = "%1.0f")),
+  coord_cartesian(xlim = c(0,1), ylim = c(0,1)),
+  scale_color_manual(values = age_group_colors),
+  theme_classic(),
+  theme(#legend.position = "none",
+        legend.position = c(0.93, 0.16),
+        legend.title = element_text(size = 7),
+        legend.text = element_text(size = 6),
+        #legend.spacing.y = unit(2, 'points'),
+        legend.key.height = unit(0.26, 'cm'),
+        legend.key.width = unit(0.35, 'cm'),
+        panel.grid.major = element_line(color = "grey95"),
+        axis.text = element_text(size = 7)))
+
+## Panel A: correlation between seroprevalence and PCR prevalence at 0 and 36 -----
+fig3A_cor <- cor_ci_df %>%
+  filter(curr_survey %in% c(0,36), lag == 0, curr_ind == "prevalence_sero") %>% 
+  mutate_at(vars(starts_with("cor")), ~sprintf(., fmt = '%#.2f')) %>% 
+  mutate(survey_label = paste0("Study month ", curr_survey))
+
+fig3A <- clu_random_modeldata %>% 
+  filter(age_group != "10+y", survey %in% c(0, 36)) %>%
+  mutate(survey_label = paste0("Study month ", survey)) %>% 
+  ggplot(aes(x = prevalence_sero, y = prevalence_pcr, color = age_group)) +
+  geom_point(size = 1, alpha = 0.7) +
+  geom_smooth(method = 'lm', formula = y~x, se = F, size = 0.5, lty = "dashed") +
+  geom_text(data = fig3A_cor, aes(x = 0.3, y = 1 - as.numeric(as.factor(age_group))*0.08, color = age_group, 
+            label = paste0("\u03C1 = ", cor_est, " (", cor_lwrci, ",", cor_uprci, ")")),
+            size = 3, show.legend = FALSE) + # use unicode to represent rho
+  labs(x = "Seroprevalence (%)", y = "PCR prevalence (%)", color = "Age group") +
+  fig3AB_theme
+
+## Panel B: correlation between clinical trachoma and PCR prevalence at 0 and 36 ------
+fig3B_cor <- cor_ci_df %>%
+  filter(curr_survey %in% c(0,36), lag == 0, curr_ind == "prevalence_clin") %>% 
+  mutate_at(vars(starts_with("cor")), ~sprintf(., fmt = '%#.2f')) %>% 
+  mutate(survey_label = paste0("Study month ", curr_survey))
+
+fig3B <- clu_random_modeldata %>% 
+  filter(age_group != "10+y", survey %in% c(0, 36)) %>% 
+  mutate(survey_label = paste0("Study month ", survey)) %>% 
+  ggplot(aes(x = prevalence_clin, y = prevalence_pcr, color = age_group)) +
+  geom_point(size = 1, alpha = 0.7) +
+  geom_smooth(method = 'lm', formula = y~x, se = F, size = 0.5, lty = "dashed") +
+  geom_text(data = fig3B_cor, aes(x = 0.3, y = 1 - as.numeric(as.factor(age_group))*0.08, color = age_group, 
+            label = paste0("\u03C1 = ", cor_est, " (", cor_lwrci, ",", cor_uprci, ")")),
+            size = 3, show.legend = FALSE) + # use unicode to represent rho
+  labs(x = "TF/TI prevalence (%)", y = "PCR prevalence (%)", color = "Age group") +
+  fig3AB_theme
+
+## Panel C: correlation between trachoma indicators with lag -----
+# filter for relevant rows of correlation and CI df
+fig3C_df <- cor_ci_df %>% 
+  filter(curr_survey == 36) %>% 
+  filter(curr_ind %in% trach_ind)
+
+fig3C <- fig3C_df %>% 
+  mutate_at(vars(starts_with("cor")), ~replace(., age_group == "6-9y" & curr_ind == "prevalence_sero" & lag %in% c(12, 24), -1)) %>%
+  mutate(curr_ind_label = case_when(curr_ind == "prevalence_sero" ~ "Serology",
+                                    curr_ind == "prevalence_pcr" ~ "PCR",
+                                    curr_ind == "prevalence_clin" ~ "TF/TI")) %>%
+  # reorder factors
+  mutate(curr_ind_label = factor(curr_ind_label, levels = c("PCR", "TF/TI", "Serology"))) %>% 
+  # NEW for x
+  mutate(x_survey = as.factor(curr_survey - lag)) %>%
+  mutate(lag = factor(lag, levels = survey_list)) %>%
+  mutate(lag_label = lag) %>% 
+  # plot
+  ggplot(aes(x = x_survey, y = cor_est, group = interaction(x_survey, age_group), color = age_group)) +
+  geom_point(size = 2, position = position_dodge(width = 0.4), alpha = 0.7) +
+  geom_errorbar(aes(x = x_survey, y = cor_est, ymin = cor_lwrci, ymax = cor_uprci, color = age_group),
+                width = 0, position = position_dodge(width = 0.4)) +
+  scale_color_manual(values = age_group_colors) +
+  facet_wrap(.~curr_ind_label, nrow = 1) +
+  labs(x = "Month of trachoma indicator measurement",  
+       y = str_wrap("Spearman correlation with month 36 PCR prevalence", width = 30),
+       color = "Age group", pch = "Trachoma measure") +
+  scale_y_continuous(breaks = seq(-1, 1, 0.2)) +
+  coord_cartesian(ylim = c(-0.2, 1)) +
+  theme_classic() +
+  theme(legend.position = c(0.96,0.17),
+        legend.title = element_text(size = 7),
+        legend.text = element_text(size = 6),
+        legend.key.width = unit(0.35, 'cm'),
+        legend.key.height = unit(0.30, 'cm'),
+        panel.grid.major = element_line(color = "grey95"),
+        axis.text.y = element_text(size = 7))
+
+## Stitch panels together -----
+fig3_top <- plot_grid(plotlist = list(fig3A, fig3B), labels = c('A', 'B'), label_size = 14, nrow = 1)
+fig3_bottom <- plot_grid(plotlist = list(fig3C), labels = c('C'), label_size = 14, nrow = 1)
+fig3 <- plot_grid(fig3_top, fig3_bottom, ncol = 1)
+
+fig3
+
+if(save_figs){
+  for (ft in file_types){
+    ggsave(filename = here(output_path, paste0("fig3_obs_cor.", ft)),
+           device = ft,
+           plot = fig3,
+           width = 9, height = 5, units = "in")
+  }
+}
+```
+
+### Figure 4
+
+```{r, fig.width = 8.5, fig.height = 3}
+## combine model results ----
+sl_summary_renamed <- sl_summary %>% 
+  mutate(rmse = sqrt(unwt_mse)) %>%
+  rename(mse = unwt_mse)
+
+combined_summary <- cv_logistic_summary %>% mutate(sl = FALSE) %>% 
+  bind_rows(sl_summary_renamed %>% mutate(sl = TRUE))
+     
+## prepare dataframe -----
+fig4_df <- combined_summary %>%
+  # give covariates clean names for legend & set order
+  mutate(covariates_label = case_when(
+    covariates == "pcr_only" & is.na(matern_var) & !sl ~ "PCR",
+    covariates == "clin_only" & is.na(matern_var) & !sl ~ "TF/TI",
+    covariates == "sero_only" & is.na(matern_var) & !sl ~ "Serology",
+    covariates == "sero_only" & matern_var == "Matern(1| lat + lon)" & !sl ~ "Serology + Matern",
+    covariates == "glmnet_vars_2" & is.na(matern_var) & !sl ~ "Geospatial features*",
+    covariates == "glmnet_vars_2" & matern_var == "Matern(1| lat + lon)" & !sl ~ "Geospatial + Matern",
+    covariates == "glmnet_and_trach_2" & matern_var == "Matern(1| lat + lon)" & !sl ~ "All trachoma + geospatial + Matern",
+    covariates == "glmnet_and_trach_2" & sl & sl_method == "spaMM-matern" ~ "All trachoma + geospatial + Matern, ensemble")) %>%
+  mutate(covariates_label = factor(covariates_label,
+                                   levels = c("PCR", "TF/TI",
+                                              "Serology", "Serology + Matern",
+                                              "Geospatial features*", "Geospatial + Matern",
+                                              "All trachoma + geospatial + Matern",
+                                              "All trachoma + geospatial + Matern, ensemble"))) %>%   
+  # remove all unnamed covariate groups
+  filter(!is.na(covariates_label)) %>%
+  # add lag label & set order of facets
+  mutate(lag_label = case_when(
+    input_lag == 0 ~ "Concurrent predictions",
+    input_lag == 12 ~ "Forward predictions, 12 months",
+    input_lag == 24 ~ "Forward predictions, 24 months",
+    input_lag == 36 ~ "Forward predictions, 36 months")) %>% 
+  mutate(lag_label = factor(lag_label, levels = c("Forward predictions, 36 months",
+                                                  "Forward predictions, 24 months",
+                                                  "Forward predictions, 12 months",
+                                                  "Concurrent predictions"))) %>% 
+  mutate_at(vars(r2, lower.ci, upper.ci, rmse), as.numeric)
+
+## write function to create figure -----
+get_r2_rmse_fig <- function(input_survey, input_folds_name){
+  ret <- fig4_df %>% 
+    filter(outcome_survey == input_survey, folds_name == input_folds_name) %>% 
+    ggplot() +
+    geom_point(aes(x = lag_label, y = r2, color = covariates_label), position = position_dodge(width = 1)) +
+    geom_errorbar(aes(x = lag_label, y = r2, color = covariates_label, ymin = lower.ci, ymax = upper.ci),
+                  position = position_dodge(width = 1), width = 0) +
+    geom_hline(yintercept = 0, color = "black", lty = "dotted") +
+    # add text labels with RMSE
+    geom_label(aes(x = lag_label, y = -0.45, label = sprintf(rmse, fmt = "%0.2f"), color = covariates_label),
+              position = position_dodge(width = 1), size = 2, alpha = 0.5, label.padding = unit(0.1, "lines"),
+              show.legend = FALSE) +
+    scale_color_manual(values = c(RColorBrewer::brewer.pal(n = 8, name = "Dark2"), "black")) +
+    coord_cartesian(ylim = c(-0.5,1)) + # limit display of y-values
+    facet_wrap(.~lag_label, nrow = 1, scales = "free_x") +
+    labs(y = expression(paste("Cross-validated ", R^2)), color = "Model specification",
+         caption = "*Includes 12-month precipitation and night light radiance as selected by LASSO") +
+    theme_classic() +
+    theme(legend.position = "bottom",
+          axis.ticks.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.title.x = element_blank(),
+          axis.title.y = element_text(size = 12),
+          panel.grid.major = element_line(color = "grey95"),
+          legend.text = element_text(size = 7),
+          legend.title = element_text(size = 8),
+          legend.key.height = unit(0.5, 'cm'),
+          plot.caption = element_text(hjust = 0)) + # align caption to left
+    guides(colour = guide_legend(nrow = 2, byrow = TRUE))
+  return(ret)
+}
+
+## save figure -----
+fig4 <- get_r2_rmse_fig(input_survey = 36, input_folds_name = "block_folds_list_15")
+
+fig4
+
+if(save_figs){
+  for (ft in file_types){
+    ggsave(filename = here(output_path, paste0("fig4_r2_rmse.", ft)),
+           device = ft,
+           plot = fig4,
+           width = 9.5, height = 3, units = "in")
+  }
+}
+```
+
+### Figure 5
+
+```{r, fig.width = 8.5, fig.height = 3}
+## select CV results for figure -----
+cv_results <- lapply(
+  1:length(cv_logistic_results),
+  function(x){
+    data.frame(index = cv_logistic_results[[x]]$index,
+               obs = cv_logistic_results[[x]]$obs,
+               pred = cv_logistic_results[[x]]$preds,
+               formula = cv_logistic_results[[x]]$formula) %>% 
+      bind_cols(cv_logistic_summary %>%
+                  filter(param_index == x) %>% 
+                  dplyr::select(param_index, covariates, matern_var,
+                                folds_name, outcome_var,
+                                outcome_survey, input_lag))}) %>%
+  bind_rows() %>% 
+  bind_rows(sl_results)
+
+cv_results_res <- cv_results %>%
+  filter(outcome_var == "prevalence_pcr",
+         folds_name == "block_folds_list_15")
+
+## Function `get_ord_pcr_counts`: calculate cumulative proportion of PCR infections (at a given survey) captured by ordered villages -----
+# input_df (dataframe): name of input dataframe
+# pcr_survey (numeric): survey to use for pcr rankings
+# order_var: order variable used to rank villages and count cumulative pcr infections
+# lag (numeric): lag between order variable measurement and pcr
+## -------------------------------------------------------------------------------
+get_ord_pcr_counts <- function(input_df){
+  
+  temp_df <- input_df %>% 
+    mutate(obs_pos30 = obs*30)
+  
+  total_pos_pcr <- sum(temp_df %>% pull(obs_pos30))
+  
+  # use observed values directly for PCR
+  if(input_df$input_lag[1] == 0 & input_df$covariates[1] == "pcr_only"){
+    ret <- temp_df %>% 
+      arrange(desc(obs_pos30)) %>%
+      ungroup() %>% 
+      mutate(ord_index = row_number(),
+             ord_prop = cumsum(obs_pos30)/total_pos_pcr) 
+  } else {
+    ret <- temp_df %>% 
+      arrange(desc(pred)) %>%
+      ungroup() %>% 
+      mutate(ord_index = row_number(),
+             ord_prop = cumsum(obs_pos30)/total_pos_pcr) 
+  }
+  
+  return(ret)
+}
+
+ord_pcr_grid <- expand.grid(outcome_survey = c(0, 12, 24, 36), input_lag = c(0, 12, 24, 36)) %>% 
+  filter(input_lag == 0 | outcome_survey == 36) %>%
+  crossing(data.frame(covariates = c("pcr_only", "clin_only", "sero_only", "glmnet_and_trach_2"),
+                      matern_var = c(NA, NA, NA, NA),
+                      sl_method = c(NA, NA, NA, "spaMM-matern"))) %>% 
+  as.data.frame()
+
+ord_pcr_counts <- lapply(
+  1:nrow(ord_pcr_grid),
+  function(x){
+    temp_df <- cv_results_res %>% filter(covariates == ord_pcr_grid[x, "covariates"],
+                                         outcome_survey == ord_pcr_grid[x, "outcome_survey"],
+                                         input_lag == ord_pcr_grid[x, "input_lag"])
+    if(is.na(ord_pcr_grid[x, "matern_var"])){
+      temp_df <- temp_df %>% filter(is.na(matern_var))
+    } else {
+      temp_df <- temp_df %>% filter(matern_var == ord_pcr_grid[x, "matern_var"])
+    }
+    
+    if(is.na(ord_pcr_grid[x, "sl_method"])){
+      temp_df <- temp_df %>% filter(is.na(sl_method))
+    } else {
+      temp_df <- temp_df %>% filter(sl_method == ord_pcr_grid[x, "sl_method"])
+    }
+    
+    get_ord_pcr_counts(temp_df)}) %>% 
+  bind_rows()
+
+## randomly permute villages to get a "null" distribution -----
+# df (dataframe): dataframe with variable to count and survey labels
+# pcr_survey (numeric): survey of interest
+# pcr_var (character): counting variable
+# i (numeric): bootstrap iteration
+clu_random_0to5_fig5 <- clu_random_0to5 %>% mutate(n_pos_30_pcr = prevalence_pcr * 30)
+
+get_random_ord <- function(df, pcr_survey, pcr_var, i){
+    
+    df_pcr <- df %>%
+      filter(survey == pcr_survey) %>% 
+      dplyr::select(cluster_id, all_of(pcr_var))
+    
+    total_pos_pcr <- sum(df_pcr %>% pull(pcr_var))
+    
+    ret <- df_pcr %>%
+      arrange(sample(1:40, replace = FALSE)) %>% 
+      ungroup() %>% 
+      mutate(ord_prop = cumsum(get(pcr_var))/total_pos_pcr) %>% 
+      pull(ord_prop)
+    
+    return(setNames(list(ret), paste0("bs_",i))) # name added to prevent warning when binding cols
+}
+
+set.seed(111)
+random_ord_npos30 <- lapply(c(0, 12, 24, 36),
+                     function(s){
+                       lapply(c(1:1000), function(x) get_random_ord(df = clu_random_0to5_fig5, pcr_survey = s, pcr_var = "n_pos_30_pcr", i = x)) %>%
+                       bind_cols() %>%
+                       ungroup() %>% 
+                       mutate(pcr_survey = s, ord_index = row_number(), pcr_var = "n_pos_30_pcr")}) %>% 
+  bind_rows()
+
+# get empirical 95% distribution
+random_ord_npos30$q0.025 <- apply(random_ord_npos30 %>% dplyr::select(-c(pcr_survey, ord_index, pcr_var)), 1, quantile, probs = 0.025)
+random_ord_npos30$q0.975 <- apply(random_ord_npos30 %>% dplyr::select(-c(pcr_survey, ord_index, pcr_var)), 1, quantile, probs = 0.975)
+
+random_ord <- random_ord_npos30 %>% dplyr::select(pcr_survey, ord_index, pcr_var, q0.025, q0.975) %>% mutate(outcome_survey_label = paste0("Month ", pcr_survey))
+
+## prep dataframe for figure -----
+fig5_df <- ord_pcr_counts %>%
+  filter(outcome_survey == 36) %>%
+  mutate(order_var_label = case_when(
+    covariates == "clin_only" ~ "TF/TI",
+    covariates == "sero_only" ~ "Serology",
+    covariates == "pcr_only" & input_lag != 0 ~ "PCR",
+    covariates == "glmnet_and_trach_2" ~ "All trachoma + geospatial \n+ Matern, ensemble")) %>% 
+  filter(!is.na(order_var_label)) %>% 
+  # add additional rows to represent fixed optimal PCR ordering at Month 36
+  bind_rows(ord_pcr_counts %>% filter(outcome_survey == 36, input_lag == 0, covariates == "pcr_only") %>%
+              mutate(order_var_label = "PCR (observed)") %>%
+              dplyr::select(-input_lag) %>% crossing(input_lag = survey_list) %>% arrange(input_lag, ord_index)) %>% 
+  mutate(order_var_label = factor(order_var_label, levels = c("PCR (observed)", "PCR", "Serology", "TF/TI", "All trachoma + geospatial \n+ Matern, ensemble"))) %>% 
+  mutate(outcome_survey_label = paste0("Month ", outcome_survey)) %>%
+  mutate(lag_label = case_when(
+    input_lag == 0 ~ "Concurrent indicators",
+    input_lag == 12 ~ "Forward ranking, 12 months",
+    input_lag == 24 ~ "Forward ranking, 24 months",
+    input_lag == 36 ~ "Forward ranking, 36 months")) %>% 
+  mutate(lag_label = factor(lag_label,
+                            levels = c("Forward ranking, 36 months", "Forward ranking, 24 months",
+                                       "Forward ranking, 12 months", "Concurrent indicators"))) %>% 
+  # to prepare for adding vertical lines to plots
+  mutate(over80 = ord_prop >= 0.8)
+
+fig5_over80 <- fig5_df %>% 
+  filter(over80) %>% 
+  group_by(order_var_label, outcome_survey, input_lag, lag_label) %>% 
+  filter(row_number() == 1) %>% 
+  ungroup() %>% 
+  mutate(ord_index = as.numeric(ord_index))
+
+## manual jittering for overlapping lines -----
+fig5_jitter_val <- 0.2
+fig5_over80[which(fig5_over80$input_lag == 0 & fig5_over80$order_var_label == "Serology"), "ord_index"] <- fig5_over80[which(fig5_over80$input_lag == 0 & fig5_over80$order_var_label == "Serology"), "ord_index"] - fig5_jitter_val
+fig5_over80[which(fig5_over80$input_lag == 0 & fig5_over80$order_var_label == "All trachoma + geospatial \n+ Matern, ensemble"), "ord_index"] <- fig5_over80[which(fig5_over80$input_lag == 0 & fig5_over80$order_var_label == "All trachoma + geospatial \n+ Matern, ensemble"), "ord_index"] + fig5_jitter_val
+
+fig5_over80[which(fig5_over80$input_lag == 24 & fig5_over80$order_var_label == "PCR"), "ord_index"] <- fig5_over80[which(fig5_over80$input_lag == 24 & fig5_over80$order_var_label == "PCR"), "ord_index"] - fig5_jitter_val
+fig5_over80[which(fig5_over80$input_lag == 24 & fig5_over80$order_var_label == "All trachoma + geospatial \n+ Matern, ensemble"), "ord_index"] <- fig5_over80[which(fig5_over80$input_lag == 24 & fig5_over80$order_var_label == "All trachoma + geospatial \n+ Matern, ensemble"), "ord_index"] + fig5_jitter_val
+
+## plot figure -----
+trach_ind_colors <- c("PCR (observed)" = "black",
+                      "PCR" = RColorBrewer::brewer.pal(n = 8, name = "Dark2")[1],
+                      "TF/TI" = RColorBrewer::brewer.pal(n = 8, name = "Dark2")[2],
+                      "Serology" = RColorBrewer::brewer.pal(n = 8, name = "Dark2")[3],
+                      "All trachoma + geospatial \n+ Matern, ensemble" = RColorBrewer::brewer.pal(n = 8, name = "Dark2")[8])
+
+fig5 <- ggplot() +
+  geom_line(data = fig5_df, aes(x = ord_index, y = ord_prop, color = order_var_label)) +
+  geom_ribbon(data = random_ord %>% filter(pcr_survey == 36),
+              aes(x = ord_index, ymin = q0.025, ymax = q0.975), fill = "grey", alpha = 0.3) +
+    geom_segment(data = fig5_over80, aes(x = ord_index, xend = ord_index,
+                                       y = -0.1, yend = ord_prop, color = order_var_label),
+                 lty = "dashed", alpha = 0.75) +
+  geom_point(data = fig5_over80, aes(x = ord_index, y = ord_prop, color = order_var_label), size = 0.9) +
+  geom_abline(slope = 1/40, intercept = 0, color = "darkgrey", lty = "dotted") +
+  scale_color_manual(values = trach_ind_colors) +
+  scale_y_continuous(breaks = seq(0,1,by = 0.2)) +
+  coord_cartesian(ylim = c(0,1)) +
+  facet_wrap(.~lag_label, nrow = 1) +
+  labs(x = "Communities ranked by predictions from given model specification",
+       y = str_wrap("Cumulative proportion of month 36 PCR infections identified", width = 35),
+       color = "Model specification") +
+  theme_classic() +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 7),
+        legend.title = element_text(size = 8))
+fig5
+
+if(save_figs){
+  for (ft in file_types){
+    ggsave(filename = here(output_path, paste0("fig5_cum_pcr_m36.", ft)),
+           device = ft,
+           plot = fig5,
+           width = 9.5, height = 3.2, units = "in")
+  }
+}
+```
+
+## Supplemental material
+
+### Table S2
+
+```{r, fig.width = 8.5, fig.align = "center"}
+## prep dataframe for Table S2 -----
+tableS2_df <- desc_stats_df %>% 
+  # drop any individuals not in 0-9yo
+  filter(age_group %in% c("0-5y", "6-9y")) %>% 
+  # select final columns for table
+  #dplyr::select(survey, age_group_label, n_pop, n_tested_pcr, n_tested_clin, n_tested_sero) %>% 
+  dplyr::select(survey, age_group_label, n_tested_pcr, n_tested_clin, n_tested_sero) %>% 
+  pivot_wider(names_from = age_group_label,
+              #values_from = c("n_pop", "n_tested_pcr", "n_tested_clin", "n_tested_sero"))
+              values_from = c("n_tested_pcr", "n_tested_clin", "n_tested_sero"))
+
+## create Table S2 using gt -----
+tableS2 <- tableS2_df %>%
+  gt() %>%
+  # format n with commas
+  fmt_number(
+    columns = starts_with("n_"),
+    decimals = 0
+  ) %>%
+  tab_spanner(
+    label = "Number tested for indicator, 0-5 year olds",
+    columns = ends_with("0to5")
+  ) %>%
+  tab_spanner(
+    label = "Number tested for indicator, 6-9 year olds",
+    columns = ends_with("6to9")
+  ) %>% 
+  cols_label(
+    survey = "Month",
+    #n_pop_0to5 = "Overall",
+    #n_pop_6to9 = "Overall",
+    n_tested_pcr_0to5 = "PCR",
+    n_tested_pcr_6to9 = "PCR",
+    n_tested_clin_0to5 = "Clinical TF/TI",
+    n_tested_clin_6to9 = "Clinical TF/TI",
+    n_tested_sero_0to5 = "Serology",
+    n_tested_sero_6to9 = "Serology",
+  ) %>%
+  # table styling
+  fmt_missing(
+    columns = everything(),
+    missing_text = "-",
+  ) %>% 
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>% 
+  tab_style(
+    style = cell_text(size = "small"),
+    locations = cells_body(
+      columns = everything()
+    )
+  ) %>% 
+  # add footnotes
+  tab_footnote(
+    footnote = "Polymerase chain reaction",
+    locations = cells_column_labels(
+      columns = contains("pcr_"))
+  ) %>% 
+  tab_footnote(
+    footnote = "Trachomatous inflammation - follicular / trachomatous inflammation - intense",
+    locations = cells_column_labels(
+      columns = contains("clin_"))
+  ) %>% 
+  tab_footnote(
+    footnote = "Serology was not measured for a random sample of 6–9-year-olds at months 12 and 24",
+    locations = cells_column_labels(
+      columns = contains("sero_"))
+  ) %>% 
+  tab_options(
+    footnotes.font.size = "x-small"
+  )
+
+tableS2
+
+## save table S2 -----
+if(save_figs){
+  gtsave(tableS2,
+         filename = "tableS2_sample_sizes.png",
+         path = here(output_path))
+}
+```
+
+### Table S3
+
+```{r, fig.width = 8.5, fig.align = "center"}
+## prep dataframe for Table S3 -----
+tableS3_df <- desc_stats_df %>% 
+  # drop any individuals not in 0-9yo
+  filter(age_group %in% c("0-5y", "6-9y")) %>% 
+  # select final columns for table
+  # note that n_tested_sero should be equal to n_tested_Pgp3 and n_tested_Ct694 in all cases
+  dplyr::select(survey, age_group_label, n_tested_sero, summary_sero, summary_Pgp3, summary_Ct694) %>% 
+  pivot_wider(names_from = age_group_label,
+              values_from = c("n_tested_sero", "summary_sero", "summary_Pgp3", "summary_Ct694"))
+
+## create Table S3 using gt -----
+tableS3 <- tableS3_df %>%
+  gt() %>%
+  # format n with commas
+  fmt_number(
+    columns = starts_with("n_tested_sero"),
+    decimals = 0
+  ) %>%
+  tab_spanner(
+    label = "Median prevalence (%), 0-5 year olds (IQR)",
+    columns = vars(n_tested_sero_0to5, summary_sero_0to5, summary_Pgp3_0to5, summary_Ct694_0to5)
+  ) %>%
+  tab_spanner(
+    label = "Median prevalence (%), 6-9 year olds (IQR)",
+    columns = vars(n_tested_sero_6to9, summary_sero_6to9, summary_Pgp3_6to9, summary_Ct694_6to9)
+  ) %>% 
+  cols_label(
+    survey = "Survey month",
+    n_tested_sero_0to5 = "n",
+    n_tested_sero_6to9 = "n",
+    summary_sero_0to5 = "Serology",
+    summary_sero_6to9 = "Serology",
+    summary_Pgp3_0to5 = "pgp3",
+    summary_Pgp3_6to9 = "pgp3",
+    summary_Ct694_0to5 = "CT694",
+    summary_Ct694_6to9 = "CT694"
+  ) %>%
+  # table styling
+  fmt_missing(
+    columns = everything(),
+    missing_text = "-",
+  ) %>% 
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>% 
+  tab_style(
+    style = cell_text(size = "small"),
+    locations = cells_body(
+      columns = everything()
+    )
+  ) %>% 
+  # add footnotes
+  tab_footnote(
+    footnote = "Number of children tested for serology outcomes",
+    locations = cells_column_labels(
+      columns = starts_with("n_tested_sero"))
+  ) %>% 
+  tab_footnote(
+    footnote = "Seropositive for both pgp3 and CT694 antigens",
+    locations = cells_column_labels(
+      columns = starts_with("summary_sero_"))
+  ) %>% 
+  tab_options(
+    footnotes.font.size = "x-small"
+  )
+
+tableS3
+
+## save -----
+if(save_figs){
+  gtsave(tableS3,
+         filename = "tableS3_antigen_summary.png",
+         path = here(output_path))
+}
+```
+
+### Figure S1
+
+```{r, message = FALSE, eval = FALSE}
+## seroprevalence version of Figure 1
+grid_preds_0to5_sero <- mapply(get_grid_preds,
+                              input_survey = survey_list,
+                              MoreArgs = list(input_df = clu_random_0to5,
+                                              input_var = "sero",
+                                              input_grid = "swift_hull_grid"),
+                                SIMPLIFY = FALSE) %>% 
+  bind_rows() %>%
+  # change pred_prevalence to numeric
+  mutate(pred_prevalence = as.numeric(as.character(pred_prevalence))) %>% 
+  mutate(survey_label = paste0("Month ", survey)) %>%
+  # st_make_grid uses rectangular bounding box, filter for grid cells that overlap convex hull
+  mutate(in_hull = st_intersects(., swift_convex_hull, sparse = FALSE)) %>%
+  filter(in_hull == TRUE) %>% 
+  dplyr::select(-in_hull)
+
+figS1A <- get_grid_preds_map(input_preds = grid_preds_0to5_sero,
+                             input_var = "sero",
+                             fill_label = "Seroprevalence")
+```
+
+```{r, fig.width = 8.5, fig.height = 4}
+figS1BC <- get_variograms(input_var = "sero",
+                         input_df = clu_random_0to5,
+                         input_models = c("Exp", "Mat"),
+                         n_permute = n_permute_variog,
+                         residualize = TRUE)
+
+## Put panels together
+figS1 <- plot_grid(#plotlist = list(figS1A, figS1BC[[1]], figS1BC[[2]]),
+                   plotlist = list(figS1BC[[1]], figS1BC[[2]]),
+                   ncol = 1,
+                   vjust = c(1.5, 1.5),
+                   hjust = c(-0.5, -0.5),
+                   labels = "AUTO",
+                   axis = "r",
+                   rel_heights = c(1,1),
+                   label_size = 14)
+
+figS1
+
+if(save_figs){
+  for (ft in file_types){
+    ggsave(filename = here(output_path, paste0("figS1_sero_map_variog.", ft)),
+           device = ft,
+           plot = figS1,
+           width = 9, height = 4, units = "in")
+  }
+}
+```
+
+### Figure S2
+
+```{r, message = FALSE, eval = FALSE}
+## clinical version of Figure 1
+grid_preds_0to5_clin <- mapply(get_grid_preds,
+                              input_survey = survey_list,
+                              MoreArgs = list(input_df = clu_random_0to5,
+                                              input_var = "clin",
+                                              input_grid = "swift_hull_grid"),
+                                SIMPLIFY = FALSE) %>% 
+  bind_rows() %>%
+  # change pred_prevalence to numeric
+  mutate(pred_prevalence = as.numeric(as.character(pred_prevalence))) %>% 
+  mutate(survey_label = paste0("Month ", survey)) %>%
+  # st_make_grid uses rectangular bounding box, filter for grid cells that overlap convex hull
+  mutate(in_hull = st_intersects(., swift_convex_hull, sparse = FALSE)) %>%
+  filter(in_hull == TRUE) %>% 
+  dplyr::select(-in_hull)
+
+figS2A <- get_grid_preds_map(input_preds = grid_preds_0to5_clin, input_var = "clin", fill_label = "TF/TI")
+```
+
+```{r, fig.width = 8.5, fig.height = 4}
+figS2BC <- get_variograms(input_var = "clin",
+                         input_df = clu_random_0to5,
+                         input_models = c("Exp", "Mat"),
+                         n_permute = n_permute_variog,
+                         residualize = TRUE)
+
+## Put panels together
+figS2 <- plot_grid(#plotlist = list(figS2A, figS2BC[[1]], figS2BC[[2]]),
+                   plotlist = list(figS2BC[[1]], figS2BC[[2]]),
+                   ncol = 1,
+                   vjust = c(1.5, 1.5),
+                   hjust = c(-0.5, -0.5),
+                   labels = "AUTO",
+                   axis = "r",
+                   rel_heights = c(1,1),
+                   label_size = 14)
+
+figS2
+
+if(save_figs){
+  for (ft in file_types){
+    ggsave(filename = here(output_path, paste0("figS2_clin_map_variog.", ft)),
+           device = ft,
+           plot = figS2,
+           width = 9, height = 4, units = "in")
+  }
+}
+```
+
+### Figure S3
+
+```{r, fig.width = 8.5}
+## Figure 3, but focused on pgp3 and CT694
+figS3A_cor <- cor_ci_df %>%
+  filter(curr_survey %in% c(0,36), lag == 0, curr_ind == "prevalence_Pgp3") %>% 
+  mutate_at(vars(starts_with("cor")), ~sprintf(., fmt = '%#.2f')) %>% 
+  mutate(survey_label = paste0("Month ", curr_survey))
+
+figS3A <- clu_random_modeldata %>% 
+  filter(age_group != "10+y", survey %in% c(0, 36)) %>%
+  ggplot(aes(x = prevalence_Pgp3, y = prevalence_pcr, color = age_group)) +
+  geom_point(size = 1, alpha = 0.7) +
+  geom_smooth(method = 'lm', formula = y~x, se = F, size = 0.5, lty = "dashed") +
+  geom_text(data = figS3A_cor, aes(x = 0.3, y = 1 - as.numeric(as.factor(age_group))*0.08, color = age_group, 
+            label = paste0("\u03C1 = ", cor_est, " (", cor_lwrci, ",", cor_uprci, ")")),
+            size = 3, show.legend = FALSE) + 
+  labs(x = "Pgp3 prevalence (%)", y = "PCR prevalence (%)", color = "Age group") +
+  fig3AB_theme
+
+## Panel B: correlation between clinical trachoma and PCR prevalence at 0 and 36 ------
+figS3B_cor <- cor_ci_df %>%
+  filter(curr_survey %in% c(0,36), lag == 0, curr_ind == "prevalence_Ct694") %>% 
+  mutate_at(vars(starts_with("cor")), ~sprintf(., fmt = '%#.2f')) %>% 
+  mutate(survey_label = paste0("Month ", curr_survey))
+
+figS3B <- clu_random_modeldata %>% 
+  filter(age_group != "10+y", survey %in% c(0, 36)) %>% 
+  ggplot(aes(x = prevalence_Ct694, y = prevalence_pcr, color = age_group)) +
+  geom_point(size = 1, alpha = 0.7) +
+  geom_smooth(method = 'lm', formula = y~x, se = F, size = 0.5, lty = "dashed") +
+  geom_text(data = figS3B_cor, aes(x = 0.3, y = 1 - as.numeric(as.factor(age_group))*0.08, color = age_group, 
+            label = paste0("\u03C1 = ", cor_est, " (", cor_lwrci, ",", cor_uprci, ")")),
+            size = 3, show.legend = FALSE) + 
+  labs(x = "CT694 prevalence (%)", y = "PCR prevalence (%)", color = "Age group") +
+  fig3AB_theme
+
+## Panel C: correlation between trachoma indicators with lag -----
+# filter for relevant rows of correlation and CI df
+figS3C_df <- cor_ci_df %>% 
+  filter(curr_survey == 36) %>% 
+  filter(curr_ind %in% c("prevalence_sero", "prevalence_Pgp3", "prevalence_Ct694"))
+
+figS3C <- figS3C_df %>% 
+  mutate_at(vars(starts_with("cor")), ~replace(., age_group == "6-9y" & lag %in% c(12, 24), -1)) %>%
+  mutate(curr_ind_label = case_when(curr_ind == "prevalence_sero" ~ "Overall (Serology)",
+                                    curr_ind == "prevalence_Pgp3" ~ "Pgp3",
+                                    curr_ind == "prevalence_Ct694" ~ "CT694")) %>%
+  # reorder factors
+  mutate(curr_ind_label = factor(curr_ind_label, levels = c("Overall (Serology)", "Pgp3", "CT694"))) %>% 
+  mutate(lag = factor(lag, levels = survey_list)) %>%
+  mutate(lag_label = paste0("Lag: ", lag, " months")) %>% 
+  mutate(x_survey = as.factor(as.numeric(curr_survey) - as.numeric(as.character(lag)))) %>% 
+  # plot
+  ggplot(aes(x = x_survey, y = cor_est, group = interaction(x_survey, age_group), color = age_group)) +
+  geom_point(size = 2, position = position_dodge(width = 0.4), alpha = 0.7) +
+  geom_errorbar(aes(x = x_survey, y = cor_est, ymin = cor_lwrci, ymax = cor_uprci, color = age_group),
+                width = 0, position = position_dodge(width = 0.4)) +
+  scale_color_manual(values = age_group_colors, limits = c("0-5y", "6-9y")) +
+  facet_wrap(.~curr_ind_label, nrow = 1, scales = "free_x") +
+  labs(x = "Month of serology measurement",
+       y = str_wrap("Spearman correlation with month 36 PCR prevalence", width = 30),
+       color = "Age group") +
+  scale_y_continuous(breaks = seq(-1, 1, 0.2)) +
+  coord_cartesian(ylim = c(-0.2, 1)) +
+  theme_classic() +
+  theme(legend.position = c(0.97,0.15),
+        legend.title = element_text(size = 6),
+        legend.text = element_text(size = 5),
+        legend.key.width = unit(0.2, 'cm'),
+        legend.key.height = unit(0.2, 'cm'),
+        panel.grid.major = element_line(color = "grey95"),
+        axis.text.y = element_text(size = 7))
+
+## Stitch panels together -----
+figS3_top <- plot_grid(plotlist = list(figS3A, figS3B), labels = c('A', 'B'), label_size = 14, nrow = 1)
+figS3_bottom <- plot_grid(plotlist = list(figS3C), labels = c('C'), label_size = 14, nrow = 1)
+figS3 <- plot_grid(figS3_top, figS3_bottom, ncol = 1)
+
+figS3
+
+if(save_figs){
+  for (ft in file_types){
+    ggsave(filename = here(output_path, paste0("figS3_obs_corr_antigens.", ft)),
+           device = ft,
+           plot = figS3,
+           width = 9, height = 5, units = "in")
+  }
+}
+```
+
+### Figure S4
+
+```{r, fig.width = 8.5, message = FALSE, eval = FALSE}
+## read in data ----
+swift_spatial_features_annual <- readRDS(file = here(data_path, "1-temp", "swift_spatial_features_annual.rds"))
+
+## plot figures ----
+get_swift_map_figs <- function(input_var, input_title, input_label, rounding_unit){
+  
+  temp_sf <- swift_spatial_features_annual %>%
+    dplyr::select(starts_with(paste0(input_var, "_"))) %>% 
+    pivot_longer(cols = starts_with(input_var),
+                 names_to = "year",
+                 names_prefix = paste0(input_var, "_"),
+                 values_to = "curr_var") %>% 
+    st_as_sf(crs = swift_crs)
+
+  fill_min <- floor(min(temp_sf$curr_var)/rounding_unit)*rounding_unit
+  fill_max <- ceiling(max(temp_sf$curr_var)/rounding_unit)*rounding_unit
+  
+  years <- unique(temp_sf$year)
+  
+  ret <- ggmap::get_stamenmap(swift_bbox) %>% 
+    ggmap() +
+    coord_sf(crs = swift_crs) +
+    geom_sf(data = st_geometry(swift_feature_grid), color = NA, fill = NA, inherit.aes = FALSE) +
+    geom_sf(data = temp_sf, aes(fill = curr_var), color = NA, alpha = 0.8, inherit.aes = FALSE) +
+    geom_sf(data = swift_woredas, color = "white", fill = NA, inherit.aes = FALSE) +
+    geom_sf(data = cluster_sf, fill = "white", color = "black", pch = 21, alpha = 0.7, inherit.aes = FALSE) +
+    scale_fill_viridis_c(lim = c(fill_min, fill_max),
+                         guide = guide_colorbar(frame.colour = "black",
+                                                frame.linewidth = 1.5,
+                                                ticks.colour = "black",
+                                                ticks.linewidth = 1.5,
+                                                barheight= 4.5,
+                                                barwidth = 0.5)) +
+    theme_classic() +
+    theme(axis.line = element_blank(),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.text = element_blank())
+  
+  if(length(years)>1){
+    ret <- ret +
+      facet_wrap(vars(year), nrow = 1) +
+      labs(title = input_title, fill = str_wrap(input_label, width = 10)) +
+      theme(legend.position = "right")
+  } else {
+    ret <- ret +
+      labs(title = str_wrap(input_title, width = 25), subtitle = years[1], fill = input_label) +
+      theme(legend.position = "bottom",
+            legend.title.align = 0.5)
+  }
+  
+  if(input_label == "%"){
+    ret <- ret +
+      scale_fill_viridis_c(labels = scales::percent,
+                           lim = c(fill_min, fill_max),
+                           guide = guide_colorbar(frame.colour = "black",
+                                                  frame.linewidth = 1.5,
+                                                  ticks.colour = "black",
+                                                  ticks.linewidth = 1.5,
+                                                  barwidth = 4.5,
+                                                  barheight = 0.5))
+  }
+
+  return(ret)
+}
+
+figS4_list <- mapply(get_swift_map_figs,
+                     input_var = c("precip", "avg_rad"),
+                     input_title = c("Daily precipitation", "Night light radiance"),
+                     input_label = c("millimeters", "nanoWatts/cm2/sr"),
+                     rounding_unit = c(0.5, 0.1),
+                     SIMPLIFY = FALSE)
+
+figS4 <- plot_grid(plotlist = figS4_list, labels = "AUTO", ncol = 1, hjust = -9,
+                   align = "v")
+
+figS4
+
+## save ----
+if(save_figs){
+  for (ft in file_types){
+    ggsave(filename = here(output_path, paste0("figS4_LASSO_features.", ft)),
+           device = ft,
+           plot = figS4,
+           width = 9, height = 5, units = "in")
+  }
+}
+```
+
+### Figure S5
+
+```{r, fig.width = 8.5, fig.height = 9}
+figS5A <- get_r2_rmse_fig(input_survey = 0, input_folds_name = "block_folds_list_15") +
+  theme(legend.position = "none", plot.caption = element_blank()) +
+  ggtitle("Outcome: PCR at Month 0")
+
+figS5B <- get_r2_rmse_fig(input_survey = 12, input_folds_name = "block_folds_list_15") +
+  theme(legend.position = "none", plot.caption = element_blank()) +
+  ggtitle("Outcome: PCR at Month 12")
+
+figS5C <- get_r2_rmse_fig(input_survey = 24, input_folds_name = "block_folds_list_15") +
+  theme(legend.position = "none", plot.caption = element_blank()) +
+  ggtitle("Outcome: PCR at Month 24")
+
+figS5D <- get_r2_rmse_fig(input_survey = 36, input_folds_name = "block_folds_list_15") +
+  theme(legend.position = "none", plot.caption = element_blank()) +
+  ggtitle("Outcome: PCR at Month 36")
+
+figS5E <- get_r2_rmse_fig(input_survey = -1, input_folds_name = "block_folds_list_15") +
+  ggtitle("Outcome: PCR pooled across all months")
+
+figS5_top <- plot_grid(figS5A, figS5B, labels = 'AUTO', nrow = 1, rel_widths = c(1,1.9))
+figS5_bottom <- plot_grid(figS5C, figS5D, figS5E, ncol = 1, rel_heights = c(1,1,1.4), labels = c("C", "D", "E"))
+figS5 <- plot_grid(figS5_top, figS5_bottom, ncol = 1, rel_heights = c(1,3.4))
+
+figS5
+
+if(save_figs){
+  for (ft in file_types){
+    ggsave(filename = here(output_path, paste0("figS5_r2_rmse_allm.", ft)),
+           device = ft,
+           plot = figS5,
+           width = 9.5, height = 9.5, units = "in")
+  }
+}
+```
+
+### Figure S6
+
+```{r, fig.width = 8.5, fig.height = 3}
+figS6_df <- combined_summary %>% 
+  filter(folds_name == "block_folds_list_15", !is.na(sl_method), covariates == "glmnet_and_trach_2") %>% 
+  # add lag label & set order of facets
+  mutate(lag_label = case_when(
+    input_lag == 0 ~ "Concurrent predictions",
+    input_lag == 12 ~ "Forward predictions, 12 months",
+    input_lag == 24 ~ "Forward predictions, 24 months",
+    input_lag == 36 ~ "Forward predictions, 36 months")) %>% 
+  mutate(lag_label = factor(lag_label, levels = c("Forward predictions, 36 months",
+                                                  "Forward predictions, 24 months",
+                                                  "Forward predictions, 12 months",
+                                                  "Concurrent predictions"))) %>% 
+  mutate_at(vars(r2, lower.ci, upper.ci, rmse), as.numeric) %>% 
+  # add superlearner labels
+  mutate(sl_method_label = case_when(
+    sl_method == "nnls" ~ "Non-negative linear least squares",
+    sl_method == "nnls-convex" ~ "Non-negative linear least squares, convex",
+    sl_method == "spaMM" ~ "Logistic regression",
+    sl_method == "spaMM-matern" ~ "Logistic regression with Matern")) %>% 
+  filter(!is.na(sl_method_label)) %>% 
+  mutate(sl_method_label = factor(sl_method_label, levels = c("Non-negative linear least squares",
+                                                              "Non-negative linear least squares, convex",
+                                                              "Logistic regression",
+                                                              "Logistic regression with Matern")))
+
+figS6 <- figS6_df %>% 
+    filter(outcome_survey == 36) %>% 
+    ggplot() +
+    geom_point(aes(x = lag_label, y = r2, color = sl_method_label), position = position_dodge(width = 1)) +
+    geom_errorbar(aes(x = lag_label, y = r2, color = sl_method_label, ymin = lower.ci, ymax = upper.ci),
+                  position = position_dodge(width = 1), width = 0) +
+    geom_hline(yintercept = 0, color = "black", lty = "dotted") +
+    # add text labels with RMSE
+    geom_label(aes(x = lag_label, y = -0.45, label = sprintf(rmse, fmt = "%0.2f"), color = sl_method_label),
+              position = position_dodge(width = 1), size = 3, alpha = 0.5, label.padding = unit(0.1, "lines"),
+              show.legend = FALSE) +
+    scale_color_manual(values = c(RColorBrewer::brewer.pal(n = 8, name = "Dark2"), "black")) +
+    coord_cartesian(ylim = c(-0.5,1)) + # limit display of y-values
+    facet_wrap(.~lag_label, nrow = 1, scales = "free_x") +
+    labs(y = expression(paste("Cross-validated ", R^2)), color = "Superlearner model") +
+    theme_classic() +
+    theme(legend.position = "bottom",
+          axis.ticks.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.title.x = element_blank(),
+          axis.title.y = element_text(size = 12),
+          panel.grid.major = element_line(color = "grey95"),
+          legend.text = element_text(size = 7),
+          legend.title = element_text(size = 8),
+          legend.key.height = unit(0.5, 'cm'),
+          plot.caption = element_text(hjust = 0)) + # align caption to left
+    guides(colour = guide_legend(nrow = 2, byrow = TRUE))
+
+## save figure -----
+figS6
+
+if(save_figs){
+  for (ft in file_types){
+    ggsave(filename = here(output_path, paste0("figS6_sl_methods.", ft)),
+           device = ft,
+           plot = figS6,
+           width = 9.5, height = 3, units = "in")
+  }
+}
+```
+
+### Figure S7
+
+```{r, fig.width = 8.5, fig.height = 10}
+figS7A <- get_r2_rmse_fig(input_survey = 36, input_folds_name = "random_folds_list") +
+  ggtitle("Cross-validation folds: random") +
+  theme(legend.position = "none",
+        plot.caption = element_blank())
+figS7B <- get_r2_rmse_fig(input_survey = 36, input_folds_name = "block_folds_list_5") +
+  ggtitle("Cross-validation folds: spatial blocks, 5x5 km") +
+  theme(legend.position = "none",
+        plot.caption = element_blank())
+figS7C <- get_r2_rmse_fig(input_survey = 36, input_folds_name = "block_folds_list_15") +
+  ggtitle("Cross-validation folds: spatial blocks, 15x15 km") +
+  theme(legend.position = "none",
+        plot.caption = element_blank())
+figS7D <- get_r2_rmse_fig(input_survey = 36, input_folds_name = "block_folds_list_20") +
+  ggtitle("Cross-validation folds: spatial blocks, 20x20 km") +
+  theme(legend.position = "none",
+        plot.caption = element_blank())
+figS7E <- get_r2_rmse_fig(input_survey = 36, input_folds_name = "loo_folds_list") +
+  ggtitle("Cross-validation folds: leave-one-out")
+  
+## save figure -----
+figS7 <- plot_grid(figS7A, figS7B, figS7C, figS7D, figS7E,
+                   labels = 'AUTO', ncol = 1,
+                   rel_heights = c(1,1,1,1,1.4))
+
+figS7
+
+if(save_figs){
+  for (ft in file_types){
+    ggsave(filename = here(output_path, paste0("figS7_cvfolds.", ft)),
+           device = ft,
+           plot = figS7,
+           width = 9.5, height = 11, units = "in")
+  }
+}
+```
+
+### Figure S8
+
+```{r, fig.width = 8.5, fig.height = 4}
+## prepare dataset for figure -----
+figS8_df <- ord_pcr_counts %>%
+  filter(outcome_survey %in% c(0,36), input_lag == 0) %>%
+  mutate(outcome_survey_label = paste0("Month ", outcome_survey)) %>%
+  mutate(order_var_label = case_when(
+    covariates == "clin_only" ~ "TF/TI",
+    covariates == "sero_only" ~ "Serology",
+    covariates == "pcr_only" ~ "PCR (observed)",
+    covariates == "glmnet_and_trach_2" ~ "All trachoma + geospatial \n+ Matern, ensemble")) %>% 
+  filter(!is.na(order_var_label)) %>% 
+  mutate(order_var_label = factor(order_var_label, levels = c("PCR (observed)", "Serology", "TF/TI", "All trachoma + geospatial \n+ Matern, ensemble"))) %>% 
+  mutate(lag_label = case_when(
+    input_lag == 0 ~ "Concurrent indicators",
+    input_lag == 12 ~ "Forward ranking, 12 months",
+    input_lag == 24 ~ "Forward ranking, 24 months",
+    input_lag == 36 ~ "Forward ranking, 36 months")) %>% 
+  mutate(lag_label = factor(lag_label,
+                            levels = c("Forward ranking, 36 months", "Forward ranking, 24 months",
+                                       "Forward ranking, 12 months", "Concurrent indicators"))) %>% 
+  # to prepare for adding vertical lines to plots
+  mutate(over80 = ord_prop >= 0.8)
+
+figS8_over80 <- figS8_df %>% 
+  filter(over80) %>% 
+  group_by(order_var_label, outcome_survey, input_lag, lag_label) %>% 
+  filter(row_number() == 1) %>% 
+  ungroup() %>% 
+  mutate(ord_index = as.numeric(ord_index))
+
+## manual jittering for overlapping lines -----
+figS8_jitter_val <- 0.2
+figS8_over80[which(figS8_over80$outcome_survey == 36 & figS8_over80$order_var_label == "Serology"), "ord_index"] <- figS8_over80[which(figS8_over80$outcome_survey == 36 & figS8_over80$order_var_label == "Serology"), "ord_index"] - figS8_jitter_val
+figS8_over80[which(figS8_over80$outcome_survey == 36 & figS8_over80$order_var_label == "All trachoma + geospatial \n+ Matern, ensemble"), "ord_index"] <- figS8_over80[which(figS8_over80$outcome_survey == 36 & figS8_over80$order_var_label == "All trachoma + geospatial \n+ Matern, ensemble"), "ord_index"] + figS8_jitter_val
+
+## plot figure -----
+figS8 <- ggplot() +
+  geom_line(data = figS8_df, aes(x = ord_index, y = ord_prop, color = order_var_label)) +
+  geom_ribbon(data = random_ord %>% filter(pcr_survey %in% c(0,36)),
+              aes(x = ord_index, ymin = q0.025, ymax = q0.975), fill = "grey", alpha = 0.3) +
+  geom_segment(data = figS8_over80, aes(x = ord_index, xend = ord_index,
+                                       y = -0.1, yend = ord_prop, color = order_var_label),
+                 lty = "dashed", alpha = 0.75) +
+  geom_point(data = figS8_over80, aes(x = ord_index, y = ord_prop, color = order_var_label), size = 0.9) +
+  geom_abline(slope = 1/40, intercept = 0, color = "darkgrey", lty = "dotted") +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.2)) +
+  scale_color_manual(values = trach_ind_colors[which(names(trach_ind_colors) != "PCR")]) +
+  coord_cartesian(ylim = c(0,1)) +
+  facet_wrap(.~outcome_survey_label, nrow = 1) +
+  labs(x = "Communities ranked by concurrent predictions from given model specification",
+       y = str_wrap("Cumulative proportion of PCR infections identified", width = 25),
+       color = "Model specification") +
+  theme_classic() +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 7),
+        legend.title = element_text(size = 8))
+figS8
+
+## save fig -----
+if(save_figs){
+  for (ft in file_types){
+    ggsave(filename = here(output_path, paste0("figS8_cum_pcr.", ft)),
+           device = ft,
+           plot = figS8,
+           width = 6, height = 3.2, units = "in")
+  }
+}
+```
+
+### Figure S9
+
+```{r, fig.width = 8.5}
+## Figure S3, but focused on TF and TI broken down
+## Panel A: correlation between TF and PCR prevalence at 0 and 36 -----
+figS9A_cor <- cor_ci_df %>%
+  filter(curr_survey %in% c(0,36), lag == 0, curr_ind == "prevalence_tf") %>% 
+  mutate_at(vars(starts_with("cor")), ~sprintf(., fmt = '%#.2f')) %>% 
+  mutate(survey_label = paste0("Month ", curr_survey))
+
+figS9A <- clu_random_modeldata %>% 
+  filter(age_group != "10+y", survey %in% c(0, 36)) %>%
+  ggplot(aes(x = prevalence_tf, y = prevalence_pcr, color = age_group)) +
+  geom_point(size = 1, alpha = 0.7) +
+  geom_smooth(method = 'lm', formula = y~x, se = F, size = 0.5, lty = "dashed") +
+  geom_text(data = figS9A_cor, aes(x = 0.3, y = 1 - as.numeric(as.factor(age_group))*0.08, color = age_group, 
+            label = paste0("\u03C1 = ", cor_est, " (", cor_lwrci, ",", cor_uprci, ")")),
+            size = 3, show.legend = FALSE) +
+  labs(x = "TF prevalence (%)", y = "PCR prevalence (%)", color = "Age group") +
+  fig3AB_theme
+
+## Panel B: correlation between clinical trachoma and PCR prevalence at 0 and 36 ------
+figS9B_cor <- cor_ci_df %>%
+  filter(curr_survey %in% c(0,36), lag == 0, curr_ind == "prevalence_ti") %>% 
+  mutate_at(vars(starts_with("cor")), ~sprintf(., fmt = '%#.2f')) %>% 
+  mutate(survey_label = paste0("Month ", curr_survey))
+
+figS9B <- clu_random_modeldata %>% 
+  filter(age_group != "10+y", survey %in% c(0, 36)) %>% 
+  ggplot(aes(x = prevalence_ti, y = prevalence_pcr, color = age_group)) +
+  geom_point(size = 1, alpha = 0.7) +
+  geom_smooth(method = 'lm', formula = y~x, se = F, size = 0.5, lty = "dashed") +
+  geom_text(data = figS9B_cor, aes(x = 0.3, y = 1 - as.numeric(as.factor(age_group))*0.08, color = age_group, 
+            label = paste0("\u03C1 = ", cor_est, " (", cor_lwrci, ",", cor_uprci, ")")),
+            size = 3, show.legend = FALSE) +
+  labs(x = "TI prevalence (%)", y = "PCR prevalence (%)", color = "Age group") +
+  fig3AB_theme
+
+## Panel C: correlation between trachoma indicators with lag -----
+# filter for relevant rows of correlation and CI df
+figS9C_df <- cor_ci_df %>% 
+  filter(curr_survey == 36) %>% 
+  filter(curr_ind %in% c("prevalence_clin", "prevalence_tf", "prevalence_ti"))
+
+figS9C <- figS9C_df %>% 
+  mutate(curr_ind_label = case_when(curr_ind == "prevalence_clin" ~ "TF/TI",
+                                    curr_ind == "prevalence_tf" ~ "TF",
+                                    curr_ind == "prevalence_ti" ~ "TI")) %>%
+  # reorder factors
+  mutate(curr_ind_label = factor(curr_ind_label, levels = c("TF/TI", "TF", "TI"))) %>% 
+  mutate(lag = factor(lag, levels = survey_list)) %>%
+  mutate(lag_label = paste0("Lag: ", lag, " months")) %>% 
+  mutate(x_survey = as.factor(as.numeric(curr_survey) - as.numeric(as.character(lag)))) %>% 
+  # plot
+  ggplot(aes(x = x_survey, y = cor_est, group = interaction(x_survey, age_group), color = age_group)) +
+  geom_point(size = 2, position = position_dodge(width = 0.4), alpha = 0.7) +
+  geom_errorbar(aes(x = x_survey, y = cor_est, ymin = cor_lwrci, ymax = cor_uprci, color = age_group),
+                width = 0, position = position_dodge(width = 0.4)) +
+  scale_color_manual(values = age_group_colors, limits = c("0-5y", "6-9y")) +
+  facet_wrap(.~curr_ind_label, nrow = 1, scales = "free_x") +
+  labs(x = "Month of clinical measurement",
+       y = str_wrap("Spearman correlation with month 36 PCR prevalence", width = 30),
+       color = "Age group") +
+  scale_y_continuous(breaks = seq(-1, 1, 0.2)) +
+  coord_cartesian(ylim = c(-0.2, 1)) +
+  theme_classic() +
+  theme(legend.position = c(0.97,0.15),
+        legend.title = element_text(size = 6),
+        legend.text = element_text(size = 5),
+        legend.key.width = unit(0.2, 'cm'),
+        legend.key.height = unit(0.2, 'cm'),
+        panel.grid.major = element_line(color = "grey95"),
+        axis.text.y = element_text(size = 7))
+
+## Stitch panels together -----
+figS9_top <- plot_grid(plotlist = list(figS9A, figS9B), labels = c('A', 'B'), label_size = 14, nrow = 1)
+figS9_bottom <- plot_grid(plotlist = list(figS9C), labels = c('C'), label_size = 14, nrow = 1)
+figS9 <- plot_grid(figS9_top, figS9_bottom, ncol = 1)
+
+figS9
+
+if(save_figs){
+  for (ft in file_types){
+    ggsave(filename = here(output_path, paste0("figS9_obs_corr_clinical.", ft)),
+           device = ft,
+           plot = figS9,
+           width = 9, height = 5, units = "in")
+  }
+}
+```
+
+### Figure S10
+
+```{r, fig.width = 8.5, fig.height = 3}
+## prepare dataframe -----
+figS10_df <- combined_summary %>%
+  filter(!sl, outcome_survey == -1, folds_name == "block_folds_list_15") %>% 
+  # give covariates clean names for legend & set order
+  mutate(covariates_label = case_when(
+    covariates == "sero_only" & is.na(matern_var) ~ "Serology",
+    covariates == "sero_and_time" & is.na(matern_var) ~ "Serology + time",
+    covariates == "sero_only" & matern_var == "Matern(1| lat + lon)" ~ "Serology + Matern (spatial)",
+    covariates == "sero_and_time" & matern_var == "Matern(1| lat + lon)" ~ "Serology + time + Matern (spatial)",
+    covariates == "sero_only" & matern_var == "Matern(1| lat + lon + survey)" ~ "Serology + Matern (spatial + time)",
+    covariates == "glmnet_and_trach_2" & is.na(matern_var) ~ "All trachoma + geospatial",
+    covariates == "glmnet_and_trach_2_time" & is.na(matern_var) ~ "All trachoma + geospatial + time",
+    covariates == "glmnet_and_trach_2" & matern_var == "Matern(1| lat + lon)" ~ "All trachoma + geospatial + Matern (spatial)",
+    covariates == "glmnet_and_trach_2_time" & matern_var == "Matern(1| lat + lon)" ~ "All trachoma + geospatial + time + Matern (spatial)",
+    covariates == "glmnet_and_trach_2" & matern_var == "Matern(1| lat + lon + survey)" ~ "All trachoma + geospatial + Matern (spatial + time)")) %>%
+  mutate(covariates_label = factor(covariates_label,
+                                   levels = c("Serology", "Serology + time", "Serology + Matern (spatial)",
+                                              "Serology + time + Matern (spatial)", "Serology + Matern (spatial + time)",
+                                              "All trachoma + geospatial", "All trachoma + geospatial + time",
+                                              "All trachoma + geospatial + Matern (spatial)", 
+                                              "All trachoma + geospatial + time + Matern (spatial)",
+                                              "All trachoma + geospatial + Matern (spatial + time)"))) %>%   
+  # remove all unnamed covariate groups
+  filter(!is.na(covariates_label)) %>%
+  # add lag label & set order of facets
+  mutate(lag_label = case_when(
+    input_lag == 0 ~ "Concurrent predictions",
+    input_lag == 12 ~ "Forward predictions, 12 months",
+    input_lag == 24 ~ "Forward predictions, 24 months",
+    input_lag == 36 ~ "Forward predictions, 36 months")) %>% 
+  mutate(lag_label = factor(lag_label, levels = c("Forward predictions, 36 months",
+                                                  "Forward predictions, 24 months",
+                                                  "Forward predictions, 12 months",
+                                                  "Concurrent predictions"))) %>% 
+  mutate_at(vars(r2, lower.ci, upper.ci, rmse), as.numeric)
+
+## plot figure -----
+figS10 <- figS10_df %>% 
+  ggplot() +
+    geom_point(aes(x = lag_label, y = r2, color = covariates_label), position = position_dodge(width = 1)) +
+    geom_errorbar(aes(x = lag_label, y = r2, color = covariates_label, ymin = lower.ci, ymax = upper.ci),
+                  position = position_dodge(width = 1), width = 0) +
+    geom_hline(yintercept = 0, color = "black", lty = "dotted") +
+    # add text labels with RMSE
+    geom_label(aes(x = lag_label, y = -0.45, label = sprintf(rmse, fmt = "%0.2f"), color = covariates_label),
+              position = position_dodge(width = 1), size = 1.55, alpha = 0.5, label.padding = unit(0.1, "lines"),
+              show.legend = FALSE) +
+    scale_color_manual(values = c(RColorBrewer::brewer.pal(n = 10, name = "Paired")[c(1,3,5,7,9)],
+                                  RColorBrewer::brewer.pal(n = 10, name = "Paired")[c(2,4,6,8,10)])) +
+    coord_cartesian(ylim = c(-0.5,1)) + # limit display of y-values
+    facet_wrap(.~lag_label, nrow = 1, scales = "free_x") +
+    labs(y = expression(paste("Cross-validated ", R^2)), color = "Model specification",
+         title = "Outcome: PCR pooled across all months",
+         caption = "*Includes 12-month precipitation and night light radiance as selected by LASSO") +
+    theme_classic() +
+    theme(legend.position = "bottom",
+          axis.ticks.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.title.x = element_blank(),
+          axis.title.y = element_text(size = 12),
+          panel.grid.major = element_line(color = "grey95"),
+          legend.text = element_text(size = 5.5),
+          legend.title = element_text(size = 8),
+          legend.title.align = 0.5,
+          legend.key.height = unit(0.5, 'cm'),
+          plot.caption = element_text(hjust = 0)) + # align caption to left
+    guides(colour = guide_legend(nrow = 2, byrow = TRUE, title.position = "top"))
+
+figS10
+
+## save -----
+if(save_figs){
+  for (ft in file_types){
+    ggsave(filename = here(output_path, paste0("figS10_pooled_pred_with_time.", ft)),
+           device = ft,
+           plot = figS10,
+           width = 9.5, height = 3.5, units = "in")
+  }
+}
+```
+
+## Session info
+
+```{r}
+sessionInfo()
+```
