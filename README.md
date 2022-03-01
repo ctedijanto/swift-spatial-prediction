@@ -21,27 +21,19 @@ Running under: macOS 10.16
 
 All analyses were run using the [RStudio IDE](https://www.rstudio.com).
 
-For best replication results, this analysis can be run within a [Docker](https://www.docker.com/) container which is built on the [rocker](https://www.rocker-project.org/images/) `geospatial` image. Packages and versions are saved in the `renv.lock` file and installed when building the Docker image using [renv](https://rstudio.github.io/renv/articles/renv.html).
+For best replication results, we recommend running the analysis within a [Docker](https://www.docker.com/) container which is built on the [rocker](https://www.rocker-project.org/images/) `geospatial` image. Packages and versions are saved in the `renv.lock` file and installed when building the Docker image using [renv](https://rstudio.github.io/renv/articles/renv.html).
 
 ## Instructions
 
 The first 3 `.Rmd` files (`01-data-prep.Rmd`, `02-gee-extract.Rmd`, and `03-merge-data.Rmd`) and code for Figures 1, 2A, S1A and S2A will not run as they rely on individual-level measurements (not made public at this time) and personally identifiable information (latitude and longitude coordinates). For the public dataset, coordinates have been altered so that exact locations remain unknown but relative location between communities has been preserved.
 
-**To run within a Docker container:**
-
 1. Clone this repository
-2. Download and run Docker on your machine. Under Preferences > Resources > Advanced, increase memory to 8GB (some included packages require additional memory to compile)
+2. Download and run Docker on your machine. Under Preferences > Resources > Advanced, increase memory to at least 4GB -- this may need to be increased if running additional prediction models
 3. Build the Docker image (example command in Terminal: `docker build -t <image name> <repository filepath>`)
 	- The Docker build should take around 60 minutes including installation of all packages using `renv`
-4. Launch an instance of the Docker image (example command in `docker run -e USER=<username> -e PASSWORD=<password> --rm -p 8787:8787 -v <repository filepath>:/home/rstudio <image name>`)
-5. Navigate to the browser (e.g. `http://localhost:8787`). To access RStudio Server, enter the user ID and password specified in the Terminal command
+4. Launch an instance of the Docker image (example command in Terminal: `docker run -e USER=<username> -e PASSWORD=<password> --rm -p 8787:8787 -v <repository filepath>:/home/<username> <image name>`)
+5. Navigate to the browser (e.g. `http://localhost:8787`) and enter the user ID and password specified in the Terminal command to access RStudio Server
 6. Run code chunks or knit entire `.Rmd` files
-
-**If not using Docker:**
-
-1. Clone this repository
-2. Use `renv::restore()` to install packages
-3. Run code chunks or knit entire `.Rmd` files
 
 ## Expected output
 
@@ -56,7 +48,7 @@ Typical knit times for the `.Rmd` files are as follows:
 * `06-figures.Rmd`: 30 minutes
 	- Decrease `n_permute_variog` (default = 1000) and/or `n_bs_cor` (default = 1000) for shorter runtime
 
-Ensemble model output may vary from run to run; the parallel processing of the package makes it challenging to set seeds for exact replication. 
+Runtimes may be increased by 5-10 minutes on RStudio Server. Ensemble model output may vary from run to run; the parallel processing of the package makes it challenging to set seeds for exact replication. 
 
 ## Troubleshooting
 
