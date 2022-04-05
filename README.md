@@ -1,12 +1,18 @@
 # SWIFT spatial prediction
 
-Code and public data to replicate analysis from the following preprint ([link](https://www.medrxiv.org/content/10.1101/2021.07.19.21260623v2)): *Tedijanto, Christine, et al. "Predicting future ocular* Chlamydia trachomatis *infection prevalence using serological, clinical, molecular, and geospatial data." medRxiv (2021).*
+This repository includes the deidentified data and R code for the following paper:
+
+Tedijanto C, Aragie S, Tadesse Z, Haile M, Zeru T, Nash SD, Wittberg DM, Gwyn S, Martin DL, Sturrock HJ, Lietman TM, Keenan JD, Arnold BF. Predicting future community-level ocular *Chlamydia trachomatis* infection prevalence using serological, clinical, molecular, and geospatial data. PLoS neglected tropical diseases. 2022 Mar 11;16(3):e0010273. https://pubmed.ncbi.nlm.nih.gov/35275911/
+
+https://journals.plos.org/plosntds/article?id=10.1371/journal.pntd.0010273
 
 This work is a secondary analysis of the WASH Upgrades for Health in Amhara (WUHA) cluster-randomized controlled trial, one of the SWIFT trials [NCT02754583](https://clinicaltrials.gov/ct2/show/NCT02754583).
 
 The statistical analysis plan for this work can be found on Open Science Framework: [https://osf.io/t48zb/](https://osf.io/t48zb/)
 
 This repository has been assigned the following DOI: [10.5281/zenodo.5851642](https://doi.org/10.5281/zenodo.5851642)
+
+Should you have any questions about the files in this repository, please contact Christine Tedijanto at UCSF (christine.tedijanto@ucsf.edu).
 
 ## System requirements
 
